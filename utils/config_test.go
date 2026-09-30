@@ -3,6 +3,7 @@ package utils
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	. "gopkg.in/check.v1"
 )
@@ -19,8 +20,8 @@ func (s *ConfigSuite) TestLoadConfig(c *C) {
 	_, _ = f.WriteString(configFile)
 	_ = f.Close()
 
-        // start with empty config
-        s.config = ConfigStructure{}
+	// start with empty config
+	s.config = ConfigStructure{}
 
 	err := LoadConfig(configname, &s.config)
 	c.Assert(err, IsNil)
@@ -29,11 +30,38 @@ func (s *ConfigSuite) TestLoadConfig(c *C) {
 	c.Check(s.config.DatabaseOpenAttempts, Equals, 33)
 }
 
+func (s *ConfigSuite) TestLoadConfigJFrogPoolStorage(c *C) {
+	configname := filepath.Join(c.MkDir(), "aptly-jfrog.json")
+	f, _ := os.Create(configname)
+	_, _ = f.WriteString(configFileJFrogJSON)
+	_ = f.Close()
+
+	// start with empty config
+	s.config = ConfigStructure{}
+
+	err := LoadConfig(configname, &s.config)
+	c.Assert(err, IsNil)
+
+	roundTrip := filepath.Join(c.MkDir(), "roundtrip-jfrog.json")
+	err = SaveConfig(roundTrip, &s.config)
+	c.Assert(err, IsNil)
+
+	encoded, err := os.ReadFile(roundTrip)
+	c.Assert(err, IsNil)
+
+	out := string(encoded)
+	c.Assert(strings.Contains(out, `"type": "jfrog"`), Equals, true)
+	c.Assert(strings.Contains(out, `"repository": "team-debian-aptly-backend"`), Equals, true)
+	c.Assert(strings.Contains(out, `"url": "https://artifactory.example/artifactory"`), Equals, true)
+	c.Assert(strings.Contains(out, `"accessToken": "test-token"`), Equals, true)
+	c.Assert(strings.Contains(out, `"prefix": "aptly-pool"`), Equals, true)
+}
+
 func (s *ConfigSuite) TestSaveConfig(c *C) {
 	configname := filepath.Join(c.MkDir(), "aptly.json2")
 
-        // start with empty config
-        s.config = ConfigStructure{}
+	// start with empty config
+	s.config = ConfigStructure{}
 
 	s.config.RootDir = "/tmp/aptly"
 	s.config.DownloadConcurrency = 5
@@ -198,124 +226,151 @@ func (s *ConfigSuite) TestSaveConfig(c *C) {
 }
 
 func (s *ConfigSuite) TestLoadYAMLConfig(c *C) {
-  configname := filepath.Join(c.MkDir(), "aptly.yaml1")
-  f, _ := os.Create(configname)
-  _, _ = f.WriteString(configFileYAML)
-  _ = f.Close()
+	configname := filepath.Join(c.MkDir(), "aptly.yaml1")
+	f, _ := os.Create(configname)
+	_, _ = f.WriteString(configFileYAML)
+	_ = f.Close()
 
-  // start with empty config
-  s.config = ConfigStructure{}
+	// start with empty config
+	s.config = ConfigStructure{}
 
-  err := LoadConfig(configname, &s.config)
-  c.Assert(err, IsNil)
-  c.Check(s.config.GetRootDir(), Equals, "/opt/aptly/")
-  c.Check(s.config.DownloadConcurrency, Equals, 40)
-  c.Check(s.config.DatabaseOpenAttempts, Equals, 10)
+	err := LoadConfig(configname, &s.config)
+	c.Assert(err, IsNil)
+	c.Check(s.config.GetRootDir(), Equals, "/opt/aptly/")
+	c.Check(s.config.DownloadConcurrency, Equals, 40)
+	c.Check(s.config.DatabaseOpenAttempts, Equals, 10)
+}
+
+func (s *ConfigSuite) TestLoadYAMLConfigJFrogPoolStorage(c *C) {
+	configname := filepath.Join(c.MkDir(), "aptly-jfrog.yaml")
+	f, _ := os.Create(configname)
+	_, _ = f.WriteString(configFileYAMLJFrog)
+	_ = f.Close()
+
+	// start with empty config
+	s.config = ConfigStructure{}
+
+	err := LoadConfig(configname, &s.config)
+	c.Assert(err, IsNil)
+
+	roundTrip := filepath.Join(c.MkDir(), "roundtrip-jfrog.yaml")
+	err = SaveConfigYAML(roundTrip, &s.config)
+	c.Assert(err, IsNil)
+
+	encoded, err := os.ReadFile(roundTrip)
+	c.Assert(err, IsNil)
+
+	out := string(encoded)
+	c.Assert(strings.Contains(out, "type: jfrog\n"), Equals, true)
+	c.Assert(strings.Contains(out, "repository: team-debian-aptly-backend\n"), Equals, true)
+	c.Assert(strings.Contains(out, "url: https://artifactory.example/artifactory\n"), Equals, true)
+	c.Assert(strings.Contains(out, "access_token: test-token\n"), Equals, true)
+	c.Assert(strings.Contains(out, "prefix: aptly-pool\n"), Equals, true)
 }
 
 func (s *ConfigSuite) TestLoadYAMLErrorConfig(c *C) {
-  configname := filepath.Join(c.MkDir(), "aptly.yaml2")
-  f, _ := os.Create(configname)
-  _, _ = f.WriteString(configFileYAMLError)
-  _ = f.Close()
+	configname := filepath.Join(c.MkDir(), "aptly.yaml2")
+	f, _ := os.Create(configname)
+	_, _ = f.WriteString(configFileYAMLError)
+	_ = f.Close()
 
-  // start with empty config
-  s.config = ConfigStructure{}
+	// start with empty config
+	s.config = ConfigStructure{}
 
-  err := LoadConfig(configname, &s.config)
-  c.Assert(err.Error(), Equals, "invalid yaml (unknown pool storage type: invalid) or json (invalid character 'p' looking for beginning of value)")
+	err := LoadConfig(configname, &s.config)
+	c.Assert(err.Error(), Equals, "invalid yaml (unknown pool storage type: invalid) or json (invalid character 'p' looking for beginning of value)")
 }
 
 func (s *ConfigSuite) TestSaveYAMLConfig(c *C) {
-  configname := filepath.Join(c.MkDir(), "aptly.yaml3")
-  f, _ := os.Create(configname)
-  _, _ = f.WriteString(configFileYAML)
-  _ = f.Close()
+	configname := filepath.Join(c.MkDir(), "aptly.yaml3")
+	f, _ := os.Create(configname)
+	_, _ = f.WriteString(configFileYAML)
+	_ = f.Close()
 
-  // start with empty config
-  s.config = ConfigStructure{}
+	// start with empty config
+	s.config = ConfigStructure{}
 
-  err := LoadConfig(configname, &s.config)
-  c.Assert(err, IsNil)
+	err := LoadConfig(configname, &s.config)
+	c.Assert(err, IsNil)
 
-  err = SaveConfigYAML(configname, &s.config)
-  c.Assert(err, IsNil)
+	err = SaveConfigYAML(configname, &s.config)
+	c.Assert(err, IsNil)
 
-  f, _ = os.Open(configname)
-  defer func() {
-    _ = f.Close()
-  }()
+	f, _ = os.Open(configname)
+	defer func() {
+		_ = f.Close()
+	}()
 
-  st, _ := f.Stat()
-  buf := make([]byte, st.Size())
-  _, _ = f.Read(buf)
+	st, _ := f.Stat()
+	buf := make([]byte, st.Size())
+	_, _ = f.Read(buf)
 
-  c.Check(string(buf), Equals, configFileYAML)
+	c.Check(string(buf), Equals, configFileYAML)
 }
 
 func (s *ConfigSuite) TestSaveYAML2Config(c *C) {
-  // start with empty config
-  s.config = ConfigStructure{}
+	// start with empty config
+	s.config = ConfigStructure{}
 
-  s.config.PackagePoolStorage.Local = &LocalPoolStorage{"/tmp/aptly-pool"}
-  s.config.PackagePoolStorage.Azure = nil
+	s.config.PackagePoolStorage.Local = &LocalPoolStorage{"/tmp/aptly-pool"}
+	s.config.PackagePoolStorage.Azure = nil
 
-  configname := filepath.Join(c.MkDir(), "aptly.yaml4")
-  err := SaveConfigYAML(configname, &s.config)
-  c.Assert(err, IsNil)
+	configname := filepath.Join(c.MkDir(), "aptly.yaml4")
+	err := SaveConfigYAML(configname, &s.config)
+	c.Assert(err, IsNil)
 
-  f, _ := os.Open(configname)
-  defer func() {
-    _ = f.Close()
-  }()
+	f, _ := os.Open(configname)
+	defer func() {
+		_ = f.Close()
+	}()
 
-  st, _ := f.Stat()
-  buf := make([]byte, st.Size())
-  _, _ = f.Read(buf)
+	st, _ := f.Stat()
+	buf := make([]byte, st.Size())
+	_, _ = f.Read(buf)
 
-  c.Check(string(buf), Equals, ""+
-    "root_dir: \"\"\n"+
-    "log_level: \"\"\n"+
-    "log_format: \"\"\n"+
-    "database_open_attempts: 0\n"+
-    "architectures: []\n"+
-    "skip_legacy_pool: false\n"+
-    "dep_follow_suggests: false\n"+
-    "dep_follow_recommends: false\n"+
-    "dep_follow_all_variants: false\n"+
-    "dep_follow_source: false\n"+
-    "dep_verboseresolve: false\n"+
-    "ppa_distributor_id: \"\"\n"+
-    "ppa_codename: \"\"\n"+
-    "ppa_baseurl: \"\"\n"+
-    "serve_in_api_mode: false\n"+
-    "enable_metrics_endpoint: false\n"+
-    "enable_swagger_endpoint: false\n"+
-    "async_api: false\n"+
-    "database_backend:\n"+
-    "    type: \"\"\n"+
-    "    db_path: \"\"\n"+
-    "    url: \"\"\n"+
-    "downloader: \"\"\n"+
-    "download_concurrency: 0\n"+
-    "download_limit: 0\n"+
-    "download_retries: 0\n"+
-    "download_sourcepackages: false\n"+
-    "gpg_provider: \"\"\n"+
-    "gpg_disable_sign: false\n"+
-    "gpg_disable_verify: false\n"+
-    "gpg_keys: []\n"+
-    "skip_contents_publishing: false\n"+
-    "skip_bz2_publishing: false\n"+
-    "filesystem_publish_endpoints: {}\n"+
-    "jfrog_publish_endpoints: {}\n"+
-    "s3_publish_endpoints: {}\n"+
-    "gcs_publish_endpoints: {}\n"+
-    "swift_publish_endpoints: {}\n"+
-    "azure_publish_endpoints: {}\n"+
-    "packagepool_storage:\n"+
-    "    type: local\n"+
-    "    path: /tmp/aptly-pool\n")
+	c.Check(string(buf), Equals, ""+
+		"root_dir: \"\"\n"+
+		"log_level: \"\"\n"+
+		"log_format: \"\"\n"+
+		"database_open_attempts: 0\n"+
+		"architectures: []\n"+
+		"skip_legacy_pool: false\n"+
+		"dep_follow_suggests: false\n"+
+		"dep_follow_recommends: false\n"+
+		"dep_follow_all_variants: false\n"+
+		"dep_follow_source: false\n"+
+		"dep_verboseresolve: false\n"+
+		"ppa_distributor_id: \"\"\n"+
+		"ppa_codename: \"\"\n"+
+		"ppa_baseurl: \"\"\n"+
+		"serve_in_api_mode: false\n"+
+		"enable_metrics_endpoint: false\n"+
+		"enable_swagger_endpoint: false\n"+
+		"async_api: false\n"+
+		"database_backend:\n"+
+		"    type: \"\"\n"+
+		"    db_path: \"\"\n"+
+		"    url: \"\"\n"+
+		"downloader: \"\"\n"+
+		"download_concurrency: 0\n"+
+		"download_limit: 0\n"+
+		"download_retries: 0\n"+
+		"download_sourcepackages: false\n"+
+		"gpg_provider: \"\"\n"+
+		"gpg_disable_sign: false\n"+
+		"gpg_disable_verify: false\n"+
+		"gpg_keys: []\n"+
+		"skip_contents_publishing: false\n"+
+		"skip_bz2_publishing: false\n"+
+		"filesystem_publish_endpoints: {}\n"+
+		"jfrog_publish_endpoints: {}\n"+
+		"s3_publish_endpoints: {}\n"+
+		"gcs_publish_endpoints: {}\n"+
+		"swift_publish_endpoints: {}\n"+
+		"azure_publish_endpoints: {}\n"+
+		"packagepool_storage:\n"+
+		"    type: local\n"+
+		"    path: /tmp/aptly-pool\n")
 }
 
 func (s *ConfigSuite) TestLoadEmptyConfig(c *C) {
@@ -323,14 +378,24 @@ func (s *ConfigSuite) TestLoadEmptyConfig(c *C) {
 	f, _ := os.Create(configname)
 	_ = f.Close()
 
-        // start with empty config
-        s.config = ConfigStructure{}
+	// start with empty config
+	s.config = ConfigStructure{}
 
 	err := LoadConfig(configname, &s.config)
 	c.Assert(err.Error(), Equals, "invalid yaml (EOF) or json (EOF)")
 }
 
 const configFile = `{"rootDir": "/opt/aptly/", "downloadConcurrency": 33, "databaseOpenAttempts": 33}`
+const configFileJFrogJSON = `{
+  "rootDir": "/opt/aptly/",
+  "packagePoolStorage": {
+    "type": "jfrog",
+    "repository": "team-debian-aptly-backend",
+    "url": "https://artifactory.example/artifactory",
+    "accessToken": "test-token",
+    "prefix": "aptly-pool"
+  }
+}`
 const configFileYAML = `root_dir: /opt/aptly/
 log_level: error
 log_format: json
@@ -432,4 +497,13 @@ packagepool_storage:
 `
 const configFileYAMLError = `packagepool_storage:
     type: invalid
+`
+
+const configFileYAMLJFrog = `root_dir: /opt/aptly/
+packagepool_storage:
+  type: jfrog
+  repository: team-debian-aptly-backend
+  url: https://artifactory.example/artifactory
+  access_token: test-token
+  prefix: aptly-pool
 `

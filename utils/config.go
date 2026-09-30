@@ -80,12 +80,24 @@ type LocalPoolStorage struct {
 	Path string `json:"path,omitempty"  yaml:"path,omitempty"`
 }
 
+type JFrogPoolStorage struct {
+	Repository  string `json:"repository"                 yaml:"repository"`
+	URL         string `json:"url"                        yaml:"url"`
+	User        string `json:"user"                       yaml:"user"`
+	Password    string `json:"password"                   yaml:"password"`
+	APIKey      string `json:"apiKey"                     yaml:"api_key"`
+	AccessToken string `json:"accessToken"                yaml:"access_token"`
+	Prefix      string `json:"prefix"                     yaml:"prefix"`
+}
+
 type PackagePoolStorage struct {
 	Local *LocalPoolStorage
 	Azure *AzureEndpoint
+	JFrog *JFrogPoolStorage
 }
 
 var AZURE = "azure"
+var JFROG = "jfrog"
 var LOCAL = "local"
 
 func (pool *PackagePoolStorage) UnmarshalJSON(data []byte) error {
@@ -99,11 +111,20 @@ func (pool *PackagePoolStorage) UnmarshalJSON(data []byte) error {
 
 	switch discriminator.Type {
 	case AZURE:
+		pool.Local = nil
+		pool.JFrog = nil
 		pool.Azure = &AzureEndpoint{}
-		return json.Unmarshal(data, &pool.Azure)
+		return json.Unmarshal(data, pool.Azure)
+	case JFROG:
+		pool.Local = nil
+		pool.Azure = nil
+		pool.JFrog = &JFrogPoolStorage{}
+		return json.Unmarshal(data, pool.JFrog)
 	case LOCAL, "":
+		pool.Azure = nil
+		pool.JFrog = nil
 		pool.Local = &LocalPoolStorage{}
-		return json.Unmarshal(data, &pool.Local)
+		return json.Unmarshal(data, pool.Local)
 	default:
 		return fmt.Errorf("unknown pool storage type: %s", discriminator.Type)
 	}
@@ -119,50 +140,86 @@ func (pool *PackagePoolStorage) UnmarshalYAML(unmarshal func(interface{}) error)
 
 	switch discriminator.Type {
 	case AZURE:
+		pool.Local = nil
+		pool.JFrog = nil
 		pool.Azure = &AzureEndpoint{}
-		return unmarshal(&pool.Azure)
+		return unmarshal(pool.Azure)
+	case JFROG:
+		pool.Local = nil
+		pool.Azure = nil
+		pool.JFrog = &JFrogPoolStorage{}
+		return unmarshal(pool.JFrog)
 	case LOCAL, "":
+		pool.Azure = nil
+		pool.JFrog = nil
 		pool.Local = &LocalPoolStorage{}
-		return unmarshal(&pool.Local)
+		return unmarshal(pool.Local)
 	default:
 		return fmt.Errorf("unknown pool storage type: %s", discriminator.Type)
 	}
 }
 
 func (pool *PackagePoolStorage) MarshalJSON() ([]byte, error) {
-	var wrapper struct {
-		Type string `json:"type,omitempty"`
-		*LocalPoolStorage
-		*AzureEndpoint
-	}
-
 	if pool.Azure != nil {
-		wrapper.Type = "azure"
-		wrapper.AzureEndpoint = pool.Azure
-	} else if pool.Local.Path != "" {
-		wrapper.Type = "local"
-		wrapper.LocalPoolStorage = pool.Local
+		wrapper := struct {
+			Type string `json:"type,omitempty"`
+			*AzureEndpoint
+		}{
+			Type:          "azure",
+			AzureEndpoint: pool.Azure,
+		}
+		return json.Marshal(wrapper)
+	} else if pool.JFrog != nil {
+		wrapper := struct {
+			Type string `json:"type,omitempty"`
+			*JFrogPoolStorage
+		}{
+			Type:             "jfrog",
+			JFrogPoolStorage: pool.JFrog,
+		}
+		return json.Marshal(wrapper)
+	} else if pool.Local != nil && pool.Local.Path != "" {
+		wrapper := struct {
+			Type string `json:"type,omitempty"`
+			*LocalPoolStorage
+		}{
+			Type:             "local",
+			LocalPoolStorage: pool.Local,
+		}
+		return json.Marshal(wrapper)
 	}
 
-	return json.Marshal(wrapper)
+	return json.Marshal(struct{}{})
 }
 
 func (pool PackagePoolStorage) MarshalYAML() (interface{}, error) {
-	var wrapper struct {
-		Type              string `yaml:"type,omitempty"`
-		*LocalPoolStorage `yaml:",inline"`
-		*AzureEndpoint    `yaml:",inline"`
-	}
-
 	if pool.Azure != nil {
-		wrapper.Type = "azure"
-		wrapper.AzureEndpoint = pool.Azure
-	} else if pool.Local.Path != "" {
-		wrapper.Type = "local"
-		wrapper.LocalPoolStorage = pool.Local
+		return struct {
+			Type           string `yaml:"type,omitempty"`
+			*AzureEndpoint `yaml:",inline"`
+		}{
+			Type:          "azure",
+			AzureEndpoint: pool.Azure,
+		}, nil
+	} else if pool.JFrog != nil {
+		return struct {
+			Type              string `yaml:"type,omitempty"`
+			*JFrogPoolStorage `yaml:",inline"`
+		}{
+			Type:             "jfrog",
+			JFrogPoolStorage: pool.JFrog,
+		}, nil
+	} else if pool.Local != nil && pool.Local.Path != "" {
+		return struct {
+			Type              string `yaml:"type,omitempty"`
+			*LocalPoolStorage `yaml:",inline"`
+		}{
+			Type:             "local",
+			LocalPoolStorage: pool.Local,
+		}, nil
 	}
 
-	return wrapper, nil
+	return struct{}{}, nil
 }
 
 // FileSystemPublishRoot describes single filesystem publishing entry point
@@ -175,15 +232,15 @@ type FileSystemPublishRoot struct {
 // S3PublishRoot describes single S3 publishing entry point
 
 type JFrogPublishRoot struct {
-	Repository      string `json:"repository"                 yaml:"repository"`
-	URL             string `json:"url"                        yaml:"url"`
-	User            string `json:"user"                       yaml:"user"`
-	Password        string `json:"password"                   yaml:"password"`
-	APIKey          string `json:"apiKey"                     yaml:"api_key"`
-	AccessToken     string `json:"accessToken"                yaml:"access_token"`
-	Prefix          string `json:"prefix"                     yaml:"prefix"`
-	PlusWorkaround  bool   `json:"plusWorkaround"             yaml:"plus_workaround"`
-	Debug           bool   `json:"debug"                      yaml:"debug"`
+	Repository     string `json:"repository"                 yaml:"repository"`
+	URL            string `json:"url"                        yaml:"url"`
+	User           string `json:"user"                       yaml:"user"`
+	Password       string `json:"password"                   yaml:"password"`
+	APIKey         string `json:"apiKey"                     yaml:"api_key"`
+	AccessToken    string `json:"accessToken"                yaml:"access_token"`
+	Prefix         string `json:"prefix"                     yaml:"prefix"`
+	PlusWorkaround bool   `json:"plusWorkaround"             yaml:"plus_workaround"`
+	Debug          bool   `json:"debug"                      yaml:"debug"`
 }
 
 type S3PublishRoot struct {

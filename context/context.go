@@ -400,8 +400,17 @@ func (context *AptlyContext) PackagePool() aptly.PackagePool {
 			if err != nil {
 				Fatal(err)
 			}
+		} else if storageConfig.JFrog != nil {
+			var err error
+			context.packagePool, err = jfrog.NewPackagePool(*storageConfig.JFrog)
+			if err != nil {
+				Fatal(err)
+			}
 		} else {
-			poolRoot := context.config().PackagePoolStorage.Local.Path
+			poolRoot := ""
+			if storageConfig.Local != nil {
+				poolRoot = storageConfig.Local.Path
+			}
 			if poolRoot == "" {
 				poolRoot = filepath.Join(context.config().GetRootDir(), "pool")
 			}

@@ -2,9 +2,12 @@ package context
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
+	"github.com/aptly-dev/aptly/files"
 	"github.com/aptly-dev/aptly/utils"
 	"github.com/smira/flag"
 
@@ -140,4 +143,40 @@ func (s *AptlyContextSuite) TestGetPublishedStorageJFrogInitError(c *C) {
 	_, err := s.context.GetPublishedStorage("jfrog:broken")
 	c.Assert(err, NotNil)
 	c.Check(err.Error(), Matches, `error creating jfrog manager: .*`)
+}
+
+func TestPackagePoolJFrogConfigured(t *testing.T) {
+	prevConfig := utils.Config
+	defer func() { utils.Config = prevConfig }()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "aptly-jfrog.yaml")
+	err := os.WriteFile(configPath, []byte(`root_dir: /tmp/aptly
+packagepool_storage:
+    type: jfrog
+    repository: team-debian-aptly-backend
+    url: http://127.0.0.1:1/artifactory
+    access_token: test-token
+    prefix: aptly-pool
+`), 0o600)
+	if err != nil {
+		t.Fatalf("failed to write config fixture: %v", err)
+	}
+
+	flags := flag.NewFlagSet("fakeFlags", flag.ContinueOnError)
+	flags.String("config", configPath, "")
+	context, err := NewContext(flags)
+	if err != nil {
+		t.Fatalf("failed to create aptly context: %v", err)
+	}
+
+	pool := context.PackagePool()
+	if pool == nil {
+		t.Fatal("expected non-nil package pool")
+	}
+
+	_, isFilesPool := pool.(*files.PackagePool)
+	if isFilesPool {
+		t.Fatalf("expected jfrog package pool, got files package pool (%T)", pool)
+	}
 }
