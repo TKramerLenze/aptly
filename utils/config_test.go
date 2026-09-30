@@ -53,6 +53,9 @@ func (s *ConfigSuite) TestLoadConfigJFrogPoolStorage(c *C) {
 	c.Assert(strings.Contains(out, `"type": "jfrog"`), Equals, true)
 	c.Assert(strings.Contains(out, `"repository": "team-debian-aptly-backend"`), Equals, true)
 	c.Assert(strings.Contains(out, `"url": "https://artifactory.example/artifactory"`), Equals, true)
+	c.Assert(strings.Contains(out, `"user": "testuser"`), Equals, true)
+	c.Assert(strings.Contains(out, `"password": "testpass"`), Equals, true)
+	c.Assert(strings.Contains(out, `"apiKey": "test-api-key"`), Equals, true)
 	c.Assert(strings.Contains(out, `"accessToken": "test-token"`), Equals, true)
 	c.Assert(strings.Contains(out, `"prefix": "aptly-pool"`), Equals, true)
 }
@@ -264,6 +267,9 @@ func (s *ConfigSuite) TestLoadYAMLConfigJFrogPoolStorage(c *C) {
 	c.Assert(strings.Contains(out, "type: jfrog\n"), Equals, true)
 	c.Assert(strings.Contains(out, "repository: team-debian-aptly-backend\n"), Equals, true)
 	c.Assert(strings.Contains(out, "url: https://artifactory.example/artifactory\n"), Equals, true)
+	c.Assert(strings.Contains(out, "user: testuser\n"), Equals, true)
+	c.Assert(strings.Contains(out, "password: testpass\n"), Equals, true)
+	c.Assert(strings.Contains(out, "api_key: test-api-key\n"), Equals, true)
 	c.Assert(strings.Contains(out, "access_token: test-token\n"), Equals, true)
 	c.Assert(strings.Contains(out, "prefix: aptly-pool\n"), Equals, true)
 }
@@ -392,6 +398,9 @@ const configFileJFrogJSON = `{
     "type": "jfrog",
     "repository": "team-debian-aptly-backend",
     "url": "https://artifactory.example/artifactory",
+    "user": "testuser",
+    "password": "testpass",
+    "apiKey": "test-api-key",
     "accessToken": "test-token",
     "prefix": "aptly-pool"
   }
@@ -504,6 +513,9 @@ packagepool_storage:
   type: jfrog
   repository: team-debian-aptly-backend
   url: https://artifactory.example/artifactory
+  user: testuser
+  password: testpass
+  api_key: test-api-key
   access_token: test-token
   prefix: aptly-pool
 `
