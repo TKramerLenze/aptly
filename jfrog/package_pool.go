@@ -26,11 +26,6 @@ type PackagePool struct {
 
 var _ aptly.PackagePool = (*PackagePool)(nil)
 
-const (
-	packagePoolInterimImportError = "JFrog package pool Import is not implemented yet"
-	packagePoolInterimVerifyError = "JFrog package pool Verify is not implemented yet"
-)
-
 // NewPackagePool validates configuration and builds a JFrog client manager without network I/O.
 func NewPackagePool(root utils.JFrogPoolStorage) (*PackagePool, error) {
 	if strings.TrimSpace(root.URL) == "" {
@@ -63,12 +58,133 @@ func NewPackagePool(root utils.JFrogPoolStorage) (*PackagePool, error) {
 	}, nil
 }
 
-func (pool *PackagePool) Import(string, string, *utils.ChecksumInfo, bool, aptly.ChecksumStorage) (string, error) {
-	return "", errors.New(packagePoolInterimImportError)
+func (pool *PackagePool) ensureChecksums(poolPath string, checksumStorage aptly.ChecksumStorage) (*utils.ChecksumInfo, error) {
+	targetChecksums, err := checksumStorage.Get(poolPath)
+	if err != nil {
+		return nil, fmt.Errorf("error loading checksums for %q: %w", poolPath, err)
+	}
+
+	if targetChecksums != nil {
+		return targetChecksums, nil
+	}
+
+	results, err := pool.search(pool.qualifiedObjectKey(poolPath), false)
+	if err != nil {
+		return nil, fmt.Errorf("error searching jfrog package pool key %q: %w", poolPath, err)
+	}
+
+	if len(results) == 0 {
+		return nil, nil
+	}
+
+	if len(results) != 1 {
+		return nil, fmt.Errorf("expected exactly one search result for %q, got %d", poolPath, len(results))
+	}
+
+	reader, err := pool.Open(poolPath)
+	if err != nil {
+		return nil, fmt.Errorf("error opening jfrog package pool key %q for checksums: %w", poolPath, err)
+	}
+
+	computedChecksums, checksumErr := utils.ChecksumsForReader(reader)
+	closeErr := reader.Close()
+	if checksumErr != nil {
+		return nil, fmt.Errorf("error checksumming jfrog package pool key %q: %w", poolPath, checksumErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("error closing jfrog package pool reader for %q: %w", poolPath, closeErr)
+	}
+
+	targetChecksums = &computedChecksums
+	if err := checksumStorage.Update(poolPath, targetChecksums); err != nil {
+		return nil, fmt.Errorf("error storing checksums for %q: %w", poolPath, err)
+	}
+
+	return targetChecksums, nil
 }
 
-func (pool *PackagePool) Verify(string, string, *utils.ChecksumInfo, aptly.ChecksumStorage) (string, bool, error) {
-	return "", false, errors.New(packagePoolInterimVerifyError)
+func (pool *PackagePool) Import(srcPath, basename string, checksums *utils.ChecksumInfo, _ bool, checksumStorage aptly.ChecksumStorage) (string, error) {
+	if checksums.MD5 == "" || checksums.SHA256 == "" || checksums.SHA512 == "" {
+		var err error
+		*checksums, err = utils.ChecksumsForFile(srcPath)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	poolPath, err := pool.buildPoolPath(basename, checksums)
+	if err != nil {
+		return "", err
+	}
+
+	targetChecksums, err := pool.ensureChecksums(poolPath, checksumStorage)
+	if err != nil {
+		return "", err
+	}
+	if targetChecksums != nil {
+		*checksums = *targetChecksums
+		return poolPath, nil
+	}
+
+	uploadParams := services.NewUploadParams()
+	uploadParams.Pattern = srcPath
+	uploadParams.Target = pool.qualifiedObjectKey(poolPath)
+	uploadParams.Flat = true
+
+	if _, _, err := pool.manager.UploadFiles(artifactory.UploadServiceOptions{}, uploadParams); err != nil {
+		return "", fmt.Errorf("error uploading %q to jfrog package pool key %q: %w", srcPath, poolPath, err)
+	}
+
+	if !checksums.Complete() {
+		*checksums, err = utils.ChecksumsForFile(srcPath)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if err := checksumStorage.Update(poolPath, checksums); err != nil {
+		return "", fmt.Errorf("error storing checksums for %q: %w", poolPath, err)
+	}
+
+	return poolPath, nil
+}
+
+func (pool *PackagePool) Verify(poolPath, basename string, checksums *utils.ChecksumInfo, checksumStorage aptly.ChecksumStorage) (string, bool, error) {
+	if poolPath == "" {
+		if checksums.SHA256 == "" {
+			return "", false, nil
+		}
+
+		var err error
+		poolPath, err = pool.buildPoolPath(basename, checksums)
+		if err != nil {
+			return "", false, err
+		}
+	}
+
+	size, err := pool.Size(poolPath)
+	if err != nil {
+		return "", false, fmt.Errorf("error checking size for jfrog package pool key %q: %w", poolPath, err)
+	}
+	if size != checksums.Size {
+		return "", false, nil
+	}
+
+	targetChecksums, err := pool.ensureChecksums(poolPath, checksumStorage)
+	if err != nil {
+		return "", false, err
+	}
+	if targetChecksums == nil {
+		return "", false, nil
+	}
+
+	if checksums.MD5 != "" && targetChecksums.MD5 != checksums.MD5 ||
+		checksums.SHA256 != "" && targetChecksums.SHA256 != checksums.SHA256 {
+		return "", false, nil
+	}
+
+	*checksums = *targetChecksums
+	return poolPath, true, nil
 }
 
 func (pool *PackagePool) LegacyPath(_ string, _ *utils.ChecksumInfo) (string, error) {

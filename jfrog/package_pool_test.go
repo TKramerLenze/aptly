@@ -6,27 +6,45 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 
+	"github.com/aptly-dev/aptly/aptly"
+	"github.com/aptly-dev/aptly/files"
 	"github.com/aptly-dev/aptly/utils"
 	jfrogutils "github.com/jfrog/jfrog-client-go/artifactory/services/utils"
 	. "gopkg.in/check.v1"
 )
 
 type PackagePoolSuite struct {
-	manager *fakeJFrogManager
-	pool    *PackagePool
+	manager      *fakeJFrogManager
+	pool         *PackagePool
+	debFile      string
+	debBytes     []byte
+	debChecksums utils.ChecksumInfo
+	cs           aptly.ChecksumStorage
 }
 
 var _ = Suite(&PackagePoolSuite{})
 
-func (s *PackagePoolSuite) SetUpTest(_ *C) {
+func (s *PackagePoolSuite) SetUpTest(c *C) {
 	s.manager = &fakeJFrogManager{}
 	s.pool = &PackagePool{
 		manager:    s.manager,
 		repository: "repo",
 		prefix:     "prefix",
 	}
+	_, currentFile, _, _ := runtime.Caller(0)
+	s.debFile = filepath.Join(filepath.Dir(currentFile), "../system/files/libboost-program-options-dev_1.49.0.1_i386.deb")
+
+	var err error
+	s.debBytes, err = os.ReadFile(s.debFile)
+	c.Assert(err, IsNil)
+
+	s.debChecksums, err = utils.ChecksumsForFile(s.debFile)
+	c.Assert(err, IsNil)
+
+	s.cs = files.NewMockChecksumStorage()
 }
 
 func (s *PackagePoolSuite) TestNewPackagePoolValidation(c *C) {
@@ -45,13 +63,62 @@ func (s *PackagePoolSuite) TestLegacyPath(c *C) {
 	c.Assert(p, Equals, "")
 }
 
-func (s *PackagePoolSuite) TestImportAndVerifyInterimErrors(c *C) {
-	_, err := s.pool.Import("/tmp/source.deb", "package.deb", &utils.ChecksumInfo{}, false, nil)
-	c.Assert(err, ErrorMatches, ".*not implemented.*")
+func (s *PackagePoolSuite) TestImportCalculatesChecksumsAndStoresMetadata(c *C) {
+	checksums := utils.ChecksumInfo{}
+	s.manager.searchReader = createReader(c, []jfrogutils.ResultItem{})
 
-	_, exists, err := s.pool.Verify("", "package.deb", &utils.ChecksumInfo{}, nil)
-	c.Assert(err, ErrorMatches, ".*not implemented.*")
-	c.Assert(exists, Equals, false)
+	poolPath, err := s.pool.Import(s.debFile, filepath.Base(s.debFile), &checksums, false, s.cs)
+	c.Assert(err, IsNil)
+	c.Assert(poolPath, Equals, "c7/6b/4bd12fd92e4dfe1b55b18a67a669_libboost-program-options-dev_1.49.0.1_i386.deb")
+	c.Assert(len(s.manager.uploadParams), Equals, 1)
+	c.Assert(s.manager.uploadParams[0].Pattern, Equals, s.debFile)
+	c.Assert(s.manager.uploadParams[0].Target, Equals, path.Join("repo", "prefix", poolPath))
+	c.Assert(s.manager.uploadParams[0].Flat, Equals, true)
+	c.Assert(checksums.SHA256, Equals, s.debChecksums.SHA256)
+	c.Assert(checksums.SHA512, Equals, s.debChecksums.SHA512)
+
+	stored := s.cs.(*files.MockChecksumStorage).Store[poolPath]
+	c.Assert(stored.SHA256, Equals, s.debChecksums.SHA256)
+	c.Assert(stored.SHA512, Equals, s.debChecksums.SHA512)
+}
+
+func (s *PackagePoolSuite) TestImportDeduplicatesWithoutSecondUpload(c *C) {
+	firstChecksums := utils.ChecksumInfo{}
+	s.manager.searchReader = createReader(c, []jfrogutils.ResultItem{})
+	poolPath, err := s.pool.Import(s.debFile, filepath.Base(s.debFile), &firstChecksums, false, s.cs)
+	c.Assert(err, IsNil)
+	c.Assert(len(s.manager.uploadParams), Equals, 1)
+
+	secondChecksums := utils.ChecksumInfo{}
+	poolPathAgain, err := s.pool.Import(s.debFile, filepath.Base(s.debFile), &secondChecksums, false, s.cs)
+	c.Assert(err, IsNil)
+	c.Assert(poolPathAgain, Equals, poolPath)
+	c.Assert(len(s.manager.uploadParams), Equals, 1)
+	c.Assert(secondChecksums.SHA512, Equals, s.debChecksums.SHA512)
+}
+
+func (s *PackagePoolSuite) TestImportRecalculatesFromRemoteWhenStorageMisses(c *C) {
+	checksums := utils.ChecksumInfo{}
+	s.manager.searchReader = createReader(c, []jfrogutils.ResultItem{})
+	poolPath, err := s.pool.Import(s.debFile, filepath.Base(s.debFile), &checksums, false, s.cs)
+	c.Assert(err, IsNil)
+
+	delete(s.cs.(*files.MockChecksumStorage).Store, poolPath)
+	s.manager.searchReader = createReader(c, []jfrogutils.ResultItem{{
+		Repo: "repo",
+		Path: path.Join("prefix", "c7", "6b"),
+		Name: "4bd12fd92e4dfe1b55b18a67a669_libboost-program-options-dev_1.49.0.1_i386.deb",
+		Size: 2738,
+	}})
+	s.manager.downloadContent = s.debBytes
+
+	reimportChecksums := utils.ChecksumInfo{}
+	reimportPath, err := s.pool.Import(s.debFile, filepath.Base(s.debFile), &reimportChecksums, false, s.cs)
+	c.Assert(err, IsNil)
+	c.Assert(reimportPath, Equals, poolPath)
+	c.Assert(len(s.manager.uploadParams), Equals, 1)
+	c.Assert(reimportChecksums.SHA512, Equals, s.debChecksums.SHA512)
+	c.Assert(len(s.manager.downloadParams), Equals, 1)
 }
 
 func (s *PackagePoolSuite) TestBuildPoolPath(c *C) {
@@ -61,6 +128,70 @@ func (s *PackagePoolSuite) TestBuildPoolPath(c *C) {
 
 	_, err = s.pool.buildPoolPath("package.deb", &utils.ChecksumInfo{SHA256: "c76b4bd12fd92e4dfe1b55b18a67"})
 	c.Assert(err, ErrorMatches, "unable to compute pool location for filename package.deb, SHA256 is missing")
+}
+
+func (s *PackagePoolSuite) TestVerifyFailuresAndSuccess(c *C) {
+	importChecksums := utils.ChecksumInfo{}
+	s.manager.searchReader = createReader(c, []jfrogutils.ResultItem{})
+	poolPath, err := s.pool.Import(s.debFile, filepath.Base(s.debFile), &importChecksums, false, s.cs)
+	c.Assert(err, IsNil)
+
+	verifiedPath, exists, err := s.pool.Verify("", filepath.Base(s.debFile), &utils.ChecksumInfo{}, s.cs)
+	c.Assert(err, IsNil)
+	c.Assert(exists, Equals, false)
+	c.Assert(verifiedPath, Equals, "")
+
+	s.manager.searchReader = createReader(c, []jfrogutils.ResultItem{{
+		Repo: "repo",
+		Path: path.Join("prefix", "c7", "6b"),
+		Name: "4bd12fd92e4dfe1b55b18a67a669_libboost-program-options-dev_1.49.0.1_i386.deb",
+		Size: 2738,
+	}})
+	verifiedPath, exists, err = s.pool.Verify(poolPath, filepath.Base(s.debFile), &utils.ChecksumInfo{Size: 0}, s.cs)
+	c.Assert(err, IsNil)
+	c.Assert(exists, Equals, false)
+	c.Assert(verifiedPath, Equals, "")
+
+	s.manager.searchReader = createReader(c, []jfrogutils.ResultItem{{
+		Repo: "repo",
+		Path: path.Join("prefix", "c7", "6b"),
+		Name: "4bd12fd92e4dfe1b55b18a67a669_libboost-program-options-dev_1.49.0.1_i386.deb",
+		Size: 2738,
+	}})
+	verifiedPath, exists, err = s.pool.Verify(poolPath, filepath.Base(s.debFile), &utils.ChecksumInfo{
+		Size: importChecksums.Size,
+		MD5:  "deadbeef",
+	}, s.cs)
+	c.Assert(err, IsNil)
+	c.Assert(exists, Equals, false)
+	c.Assert(verifiedPath, Equals, "")
+
+	s.manager.searchReader = createReader(c, []jfrogutils.ResultItem{{
+		Repo: "repo",
+		Path: path.Join("prefix", "c7", "6b"),
+		Name: "4bd12fd92e4dfe1b55b18a67a669_libboost-program-options-dev_1.49.0.1_i386.deb",
+		Size: 2738,
+	}})
+	verifiedPath, exists, err = s.pool.Verify(poolPath, filepath.Base(s.debFile), &utils.ChecksumInfo{
+		Size:   importChecksums.Size,
+		SHA256: "deadbeef",
+	}, s.cs)
+	c.Assert(err, IsNil)
+	c.Assert(exists, Equals, false)
+	c.Assert(verifiedPath, Equals, "")
+
+	checksums := utils.ChecksumInfo{Size: importChecksums.Size}
+	s.manager.searchReader = createReader(c, []jfrogutils.ResultItem{{
+		Repo: "repo",
+		Path: path.Join("prefix", "c7", "6b"),
+		Name: "4bd12fd92e4dfe1b55b18a67a669_libboost-program-options-dev_1.49.0.1_i386.deb",
+		Size: 2738,
+	}})
+	verifiedPath, exists, err = s.pool.Verify(poolPath, filepath.Base(s.debFile), &checksums, s.cs)
+	c.Assert(err, IsNil)
+	c.Assert(exists, Equals, true)
+	c.Assert(verifiedPath, Equals, poolPath)
+	c.Assert(checksums.SHA512, Equals, s.debChecksums.SHA512)
 }
 
 func (s *PackagePoolSuite) TestSize(c *C) {
