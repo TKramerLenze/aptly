@@ -3,6 +3,7 @@ package jfrog
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -75,7 +76,7 @@ func (pool *PackagePool) LegacyPath(_ string, _ *utils.ChecksumInfo) (string, er
 }
 
 func (pool *PackagePool) Size(relPath string) (int64, error) {
-	results, err := pool.search(pool.qualifiedObjectKey(relPath))
+	results, err := pool.search(pool.qualifiedObjectKey(relPath), false)
 	if err != nil {
 		return 0, err
 	}
@@ -99,13 +100,17 @@ func (pool *PackagePool) Open(relPath string) (aptly.ReadSeekerCloser, error) {
 
 	download := services.NewDownloadParams()
 	download.Pattern = pool.qualifiedObjectKey(relPath)
-	download.Target = tempDir
+	download.Target = tempDir + string(os.PathSeparator)
 	download.Flat = true
 
-	_, failed, err := pool.manager.DownloadFiles(download)
+	downloaded, failed, err := pool.manager.DownloadFiles(download)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("error downloading %q from jfrog package pool: %w", relPath, err)
+	}
+	if downloaded == 0 && failed == 0 {
+		cleanup()
+		return nil, fmt.Errorf("error downloading %q from jfrog package pool: no files were downloaded", relPath)
 	}
 	if failed > 0 {
 		cleanup()
@@ -130,7 +135,7 @@ func (pool *PackagePool) FilepathList(progress aptly.Progress) ([]string, error)
 		defer progress.ShutdownBar()
 	}
 
-	results, err := pool.search(path.Join(pool.repository, pool.prefix, "*"))
+	results, err := pool.search(path.Join(pool.repository, pool.prefix, "*"), true)
 	if err != nil {
 		return nil, err
 	}
@@ -188,9 +193,10 @@ func (pool *PackagePool) qualifiedObjectKey(relPath string) string {
 	return path.Join(pool.repository, pool.prefix, relPath)
 }
 
-func (pool *PackagePool) search(pattern string) ([]jfrogutils.ResultItem, error) {
+func (pool *PackagePool) search(pattern string, recursive bool) ([]jfrogutils.ResultItem, error) {
 	params := services.NewSearchParams()
 	params.Pattern = pattern
+	params.Recursive = recursive
 
 	reader, err := pool.manager.SearchFiles(params)
 	if err != nil {
@@ -199,8 +205,20 @@ func (pool *PackagePool) search(pattern string) ([]jfrogutils.ResultItem, error)
 	defer func() { _ = reader.Close() }()
 
 	results := []jfrogutils.ResultItem{}
-	for item := new(jfrogutils.ResultItem); reader.NextRecord(item) == nil; item = new(jfrogutils.ResultItem) {
+	for {
+		item := new(jfrogutils.ResultItem)
+		nextErr := reader.NextRecord(item)
+		if nextErr != nil {
+			if errors.Is(nextErr, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("error reading jfrog search results: %w", nextErr)
+		}
 		results = append(results, *item)
+	}
+
+	if readErr := reader.GetError(); readErr != nil {
+		return nil, fmt.Errorf("error reading jfrog search results: %w", readErr)
 	}
 
 	return results, nil

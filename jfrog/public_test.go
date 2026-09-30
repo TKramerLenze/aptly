@@ -41,9 +41,13 @@ type fakeJFrogManager struct {
 	searchReader *content.ContentReader
 	searchErr    error
 
-	downloadParams  []services.DownloadParams
-	downloadErr     error
-	downloadContent []byte
+	downloadParams    []services.DownloadParams
+	downloadErr       error
+	downloadContent   []byte
+	downloadFailed    int
+	downloadCount     int
+	downloadCountSet  bool
+	downloadSkipWrite bool
 
 	moveParams []services.MoveCopyParams
 	moveErr    error
@@ -89,13 +93,15 @@ func (m *fakeJFrogManager) SearchFiles(params services.SearchParams) (*content.C
 
 func (m *fakeJFrogManager) DownloadFiles(params ...services.DownloadParams) (int, int, error) {
 	m.downloadParams = append(m.downloadParams, params...)
-	if m.downloadErr != nil {
-		return 0, len(params), m.downloadErr
-	}
 
 	data := m.downloadContent
 	if data == nil {
 		data = []byte("downloaded-bytes")
+	}
+
+	downloadedCount := len(params)
+	if m.downloadCountSet {
+		downloadedCount = m.downloadCount
 	}
 
 	for _, p := range params {
@@ -104,17 +110,33 @@ func (m *fakeJFrogManager) DownloadFiles(params ...services.DownloadParams) (int
 			return 0, len(params), errors.New("download target is empty")
 		}
 
-		if err := os.MkdirAll(target, 0o755); err != nil {
-			return 0, len(params), err
+		writePath := target
+		if strings.HasSuffix(target, "/") || strings.HasSuffix(target, "\\") {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return 0, len(params), err
+			}
+			writePath = filepath.Join(target, path.Base(p.Pattern))
+		} else {
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return 0, len(params), err
+			}
 		}
 
-		destination := filepath.Join(target, path.Base(p.Pattern))
-		if err := os.WriteFile(destination, data, 0o644); err != nil {
-			return 0, len(params), err
+		if !m.downloadSkipWrite {
+			if err := os.WriteFile(writePath, data, 0o644); err != nil {
+				return 0, len(params), err
+			}
 		}
 	}
 
-	return len(params), 0, nil
+	if m.downloadErr != nil {
+		return 0, m.downloadFailed, m.downloadErr
+	}
+	if m.downloadFailed > 0 {
+		return downloadedCount, m.downloadFailed, nil
+	}
+
+	return downloadedCount, 0, nil
 }
 
 func (m *fakeJFrogManager) Move(params ...services.MoveCopyParams) (int, int, error) {
@@ -232,6 +254,11 @@ func createReader(c *C, results []jfrogutils.ResultItem) *content.ContentReader 
 	data, err := json.Marshal(resultFixture{Results: results})
 	c.Assert(err, IsNil)
 	c.Assert(os.WriteFile(filePath, data, 0o644), IsNil)
+	return content.NewContentReader(filePath, "results")
+}
+
+func createMalformedReader(c *C) *content.ContentReader {
+	filePath := filepath.Join(c.MkDir(), "missing-results.json")
 	return content.NewContentReader(filePath, "results")
 }
 
