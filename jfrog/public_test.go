@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aptly-dev/aptly/aptly"
@@ -38,6 +40,10 @@ type fakeJFrogManager struct {
 	searchParams []services.SearchParams
 	searchReader *content.ContentReader
 	searchErr    error
+
+	downloadParams  []services.DownloadParams
+	downloadErr     error
+	downloadContent []byte
 
 	moveParams []services.MoveCopyParams
 	moveErr    error
@@ -79,6 +85,36 @@ func (m *fakeJFrogManager) SearchFiles(params services.SearchParams) (*content.C
 		return m.searchReader, nil
 	}
 	return content.NewEmptyContentReader("results"), nil
+}
+
+func (m *fakeJFrogManager) DownloadFiles(params ...services.DownloadParams) (int, int, error) {
+	m.downloadParams = append(m.downloadParams, params...)
+	if m.downloadErr != nil {
+		return 0, len(params), m.downloadErr
+	}
+
+	data := m.downloadContent
+	if data == nil {
+		data = []byte("downloaded-bytes")
+	}
+
+	for _, p := range params {
+		target := strings.TrimSpace(p.Target)
+		if target == "" {
+			return 0, len(params), errors.New("download target is empty")
+		}
+
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return 0, len(params), err
+		}
+
+		destination := filepath.Join(target, path.Base(p.Pattern))
+		if err := os.WriteFile(destination, data, 0o644); err != nil {
+			return 0, len(params), err
+		}
+	}
+
+	return len(params), 0, nil
 }
 
 func (m *fakeJFrogManager) Move(params ...services.MoveCopyParams) (int, int, error) {
