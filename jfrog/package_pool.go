@@ -22,6 +22,7 @@ type PackagePool struct {
 	manager    artifactory.ArtifactoryServicesManager
 	repository string
 	prefix     string
+	openFn     func(relPath string) (aptly.ReadSeekerCloser, error)
 }
 
 var _ aptly.PackagePool = (*PackagePool)(nil)
@@ -81,7 +82,7 @@ func (pool *PackagePool) ensureChecksums(poolPath string, checksumStorage aptly.
 		return nil, fmt.Errorf("expected exactly one search result for %q, got %d", poolPath, len(results))
 	}
 
-	reader, err := pool.Open(poolPath)
+	reader, err := pool.openChecksumReader(poolPath)
 	if err != nil {
 		return nil, fmt.Errorf("error opening jfrog package pool key %q for checksums: %w", poolPath, err)
 	}
@@ -101,6 +102,14 @@ func (pool *PackagePool) ensureChecksums(poolPath string, checksumStorage aptly.
 	}
 
 	return targetChecksums, nil
+}
+
+func (pool *PackagePool) openChecksumReader(relPath string) (aptly.ReadSeekerCloser, error) {
+	if pool.openFn != nil {
+		return pool.openFn(relPath)
+	}
+
+	return pool.Open(relPath)
 }
 
 func (pool *PackagePool) Import(srcPath, basename string, checksums *utils.ChecksumInfo, _ bool, checksumStorage aptly.ChecksumStorage) (string, error) {
@@ -131,8 +140,19 @@ func (pool *PackagePool) Import(srcPath, basename string, checksums *utils.Check
 	uploadParams.Target = pool.qualifiedObjectKey(poolPath)
 	uploadParams.Flat = true
 
-	if _, _, err := pool.manager.UploadFiles(artifactory.UploadServiceOptions{}, uploadParams); err != nil {
+	uploaded, failed, err := pool.manager.UploadFiles(artifactory.UploadServiceOptions{}, uploadParams)
+	if err != nil {
 		return "", fmt.Errorf("error uploading %q to jfrog package pool key %q: %w", srcPath, poolPath, err)
+	}
+
+	if uploaded != 1 || failed != 0 {
+		return "", fmt.Errorf(
+			"error uploading %q to jfrog package pool key %q: expected uploaded=1 and failed=0, got uploaded=%d failed=%d",
+			srcPath,
+			poolPath,
+			uploaded,
+			failed,
+		)
 	}
 
 	if !checksums.Complete() {

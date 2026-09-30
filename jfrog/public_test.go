@@ -30,6 +30,9 @@ type fakeJFrogManager struct {
 
 	uploadParams []services.UploadParams
 	uploadErr    error
+	uploadCount  int
+	uploadFailed int
+	uploadSet    bool
 
 	deleteParams      []services.DeleteParams
 	getPathsToDelete  *content.ContentReader
@@ -39,6 +42,7 @@ type fakeJFrogManager struct {
 
 	searchParams []services.SearchParams
 	searchReader *content.ContentReader
+	searchQueue  []*content.ContentReader
 	searchErr    error
 
 	downloadParams    []services.DownloadParams
@@ -61,7 +65,12 @@ type fakeJFrogManager struct {
 
 func (m *fakeJFrogManager) UploadFiles(_ artifactory.UploadServiceOptions, params ...services.UploadParams) (int, int, error) {
 	m.uploadParams = append(m.uploadParams, params...)
-	return len(params), 0, m.uploadErr
+	uploaded := len(params)
+	if m.uploadSet {
+		uploaded = m.uploadCount
+	}
+
+	return uploaded, m.uploadFailed, m.uploadErr
 }
 
 func (m *fakeJFrogManager) GetPathsToDelete(params services.DeleteParams) (*content.ContentReader, error) {
@@ -84,6 +93,11 @@ func (m *fakeJFrogManager) SearchFiles(params services.SearchParams) (*content.C
 	m.searchParams = append(m.searchParams, params)
 	if m.searchErr != nil {
 		return nil, m.searchErr
+	}
+	if len(m.searchQueue) > 0 {
+		reader := m.searchQueue[0]
+		m.searchQueue = m.searchQueue[1:]
+		return reader, nil
 	}
 	if m.searchReader != nil {
 		return m.searchReader, nil
