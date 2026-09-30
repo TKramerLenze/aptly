@@ -47,7 +47,12 @@ func createPublishedStorageConfig(url, user, password, apiKey, accessToken strin
 		accessToken = os.Getenv("JFROG_ACCESSTOKEN");
 	}
 
-	if user != "" && password != "" {
+	hasUserPassword := user != "" && password != ""
+	if !hasUserPassword && apiKey == "" && accessToken == "" {
+		return nil, fmt.Errorf("jfrog credentials are required: configure JFROG_ACCESSTOKEN, JFROG_APIKEY, or both JFROG_USERNAME and JFROG_PASSWORD")
+	}
+
+	if hasUserPassword {
 		artDetails.SetUser(user)
 		artDetails.SetPassword(password)
 	} else if apiKey != "" {

@@ -18,6 +18,7 @@ import (
 type DownloaderSuiteBase struct {
 	tempfile *os.File
 	l        net.Listener
+	mux      *http.ServeMux
 	url      string
 	ch       chan struct{}
 	progress aptly.Progress
@@ -30,15 +31,15 @@ func (s *DownloaderSuiteBase) SetUpTest(c *C) {
 	s.l, _ = net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	s.url = fmt.Sprintf("http://localhost:%d", s.l.Addr().(*net.TCPAddr).Port)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
+	s.mux = http.NewServeMux()
+	s.mux.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, "Hello, %s", r.URL.Path)
 	})
 
 	s.ch = make(chan struct{})
 
 	go func() {
-		_ = http.Serve(s.l, mux)
+		_ = http.Serve(s.l, s.mux)
 		close(s.ch)
 	}()
 
@@ -77,6 +78,30 @@ func (s *DownloaderSuite) TestDownloadOK(c *C) {
 	c.Assert(s.d.Download(s.ctx, s.url+"/test", s.tempfile.Name()), IsNil)
 }
 
+func (s *DownloaderSuite) TestDownloadWithJfrogBearerToken(c *C) {
+	authorization := make(chan string, 1)
+	s.mux.HandleFunc("/bearer", func(w http.ResponseWriter, r *http.Request) {
+		authorization <- r.Header.Get("Authorization")
+		_, _ = fmt.Fprint(w, "authenticated")
+	})
+
+	s.d = NewDownloaderWithJfrogAuth(0, 1, s.progress, []string{"localhost"}, "", "", "token")
+	c.Assert(s.d.Download(s.ctx, s.url+"/bearer", s.tempfile.Name()), IsNil)
+	c.Assert(<-authorization, Equals, "Bearer token")
+}
+
+func (s *DownloaderSuite) TestDownloadWithJfrogBasicAuthentication(c *C) {
+	authorization := make(chan string, 1)
+	s.mux.HandleFunc("/basic", func(w http.ResponseWriter, r *http.Request) {
+		authorization <- r.Header.Get("Authorization")
+		_, _ = fmt.Fprint(w, "authenticated")
+	})
+
+	s.d = NewDownloaderWithJfrogAuth(0, 1, s.progress, []string{"localhost"}, "user", "password", "")
+	c.Assert(s.d.Download(s.ctx, s.url+"/basic", s.tempfile.Name()), IsNil)
+	c.Assert(<-authorization, Equals, "Basic dXNlcjpwYXNzd29yZA==")
+}
+
 func (s *DownloaderSuite) TestDownloadWithChecksum(c *C) {
 	c.Assert(s.d.DownloadWithChecksum(s.ctx, s.url+"/test", s.tempfile.Name(), &utils.ChecksumInfo{}, false),
 		ErrorMatches, ".*size check mismatch 12 != 0")
@@ -112,6 +137,10 @@ func (s *DownloaderSuite) TestDownloadWithChecksum(c *C) {
 func (s *DownloaderSuite) TestDownload404(c *C) {
 	c.Assert(s.d.Download(s.ctx, s.url+"/doesntexist", s.tempfile.Name()),
 		ErrorMatches, "HTTP code 404.*")
+}
+
+func (s *DownloaderSuite) TestRetryableErrorDoesNotRetryNotFound(c *C) {
+	c.Assert(retryableError(&Error{Code: http.StatusNotFound}), Equals, false)
 }
 
 func (s *DownloaderSuite) TestDownloadConnectError(c *C) {

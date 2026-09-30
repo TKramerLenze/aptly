@@ -43,11 +43,12 @@ type ConfigStructure struct { // nolint: maligned
 	DatabaseBackend DBConfig `json:"databaseBackend"               yaml:"database_backend"`
 
 	// Mirroring
-	Downloader             string `json:"downloader"                    yaml:"downloader"`
-	DownloadConcurrency    int    `json:"downloadConcurrency"           yaml:"download_concurrency"`
-	DownloadLimit          int64  `json:"downloadSpeedLimit"            yaml:"download_limit"`
-	DownloadRetries        int    `json:"downloadRetries"               yaml:"download_retries"`
-	DownloadSourcePackages bool   `json:"downloadSourcePackages"        yaml:"download_sourcepackages"`
+	Downloader             string   `json:"downloader"                    yaml:"downloader"`
+	DownloadConcurrency    int      `json:"downloadConcurrency"           yaml:"download_concurrency"`
+	DownloadLimit          int64    `json:"downloadSpeedLimit"            yaml:"download_limit"`
+	DownloadRetries        int      `json:"downloadRetries"               yaml:"download_retries"`
+	DownloadSourcePackages bool     `json:"downloadSourcePackages"        yaml:"download_sourcepackages"`
+	JFrogRemoteAuthHosts   []string `json:"jfrogRemoteAuthHosts"        yaml:"jfrog_remote_auth_hosts"`
 
 	// Signing
 	GpgProvider      string   `json:"gpgProvider"                   yaml:"gpg_provider"`

@@ -257,7 +257,15 @@ func (context *AptlyContext) newDownloader(progress aptly.Progress) aptly.Downlo
 	if downloader == "grab" {
 		return http.NewGrabDownloader(downloadLimit*1024, maxTries, progress)
 	}
-	return http.NewDownloader(downloadLimit*1024, maxTries, progress)
+	return http.NewDownloaderWithJfrogAuth(
+		downloadLimit*1024,
+		maxTries,
+		progress,
+		context.config().JFrogRemoteAuthHosts,
+		os.Getenv("JFROG_USERNAME"),
+		os.Getenv("JFROG_PASSWORD"),
+		os.Getenv("JFROG_ACCESSTOKEN"),
+	)
 }
 
 // Downloader returns instance of current downloader

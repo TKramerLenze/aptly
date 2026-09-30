@@ -540,6 +540,11 @@ func (s *PublishedStorageSuite) TestCreatePublishedStorageConfig(c *C) {
 	c.Assert(withUserPasswordFromEnvDetails.GetUser(), Equals, "userfromenv")
 }
 
+func (s *PublishedStorageSuite) TestCreatePublishedStorageConfigRequiresCredentials(c *C) {
+	_, err := createPublishedStorageConfig("https://example.jfrog.local/artifactory", "", "", "", "")
+	c.Assert(err, ErrorMatches, "jfrog credentials are required: .*")
+}
+
 func (s *PublishedStorageSuite) TestNewPublishedStorageRaw(c *C) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -563,7 +568,7 @@ func (s *PublishedStorageSuite) TestNewPublishedStorageRaw(c *C) {
 func (s *PublishedStorageSuite) TestNewPublishedStorageRawManagerError(c *C) {
 	// An SSH URL causes artifactory.New() to fail (no SSH key configured),
 	// exercising the error return on lines 59-61.
-	_, err := NewPublishedStorageRaw("repo", "ssh://example.local/artifactory", "", "", "", "", "", false, false)
+	_, err := NewPublishedStorageRaw("repo", "ssh://example.local/artifactory", "", "", "", "token", "", false, false)
 	c.Assert(err, ErrorMatches, "error creating jfrog manager: .*")
 }
 

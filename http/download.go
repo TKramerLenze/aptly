@@ -27,15 +27,25 @@ var (
 
 // downloaderImpl is implementation of Downloader interface
 type downloaderImpl struct {
-	progress  aptly.Progress
-	aggWriter io.Writer
-	maxTries  int
-	client    *http.Client
+	progress             aptly.Progress
+	aggWriter            io.Writer
+	maxTries             int
+	client               *http.Client
+	jfrogRemoteAuthHosts []string
+	jfrogUsername        string
+	jfrogPassword        string
+	jfrogAccessToken     string
 }
 
 // NewDownloader creates new instance of Downloader which specified number
 // of threads and download limit in bytes/sec
 func NewDownloader(downLimit int64, maxTries int, progress aptly.Progress) aptly.Downloader {
+	return NewDownloaderWithJfrogAuth(downLimit, maxTries, progress, nil, "", "", "")
+}
+
+// NewDownloaderWithJfrogAuth creates a downloader that authenticates requests to configured JFrog hosts.
+func NewDownloaderWithJfrogAuth(downLimit int64, maxTries int, progress aptly.Progress,
+	jfrogRemoteAuthHosts []string, jfrogUsername, jfrogPassword, jfrogAccessToken string) aptly.Downloader {
 	transport := http.Transport{}
 	transport.Proxy = http.DefaultTransport.(*http.Transport).Proxy
 	transport.ResponseHeaderTimeout = 30 * time.Second
@@ -47,9 +57,13 @@ func NewDownloader(downLimit int64, maxTries int, progress aptly.Progress) aptly
 	transport.RegisterProtocol("ar+https", NewGCPRoundTripper(&transport))
 
 	downloader := &downloaderImpl{
-		progress:  progress,
-		maxTries:  maxTries,
-		aggWriter: io.Writer(progress),
+		progress:             progress,
+		maxTries:             maxTries,
+		aggWriter:            io.Writer(progress),
+		jfrogRemoteAuthHosts: jfrogRemoteAuthHosts,
+		jfrogUsername:        jfrogUsername,
+		jfrogPassword:        jfrogPassword,
+		jfrogAccessToken:     jfrogAccessToken,
 		client: &http.Client{
 			Transport: &transport,
 		},
@@ -128,6 +142,12 @@ func retryableError(err error) bool {
 	// unwrap errors.Wrap
 	err = errors.Cause(err)
 
+	if httpErr, ok := err.(*Error); ok {
+		return httpErr.Code == http.StatusRequestTimeout ||
+			httpErr.Code == http.StatusTooManyRequests ||
+			httpErr.Code >= http.StatusInternalServerError
+	}
+
 	// unwrap *url.Error
 	if wrapped, ok := err.(*url.Error); ok {
 		err = wrapped.Err
@@ -162,6 +182,7 @@ func (downloader *downloaderImpl) newRequest(ctx context.Context, method, url st
 	}
 	req.Close = true
 	req = req.WithContext(ctx)
+	downloader.addJfrogAuthentication(req)
 
 	proxyURL, _ := downloader.client.Transport.(*http.Transport).Proxy(req)
 	if proxyURL == nil && (req.URL.Scheme == "http" || req.URL.Scheme == "https") {
@@ -170,6 +191,21 @@ func (downloader *downloaderImpl) newRequest(ctx context.Context, method, url st
 	}
 
 	return req, nil
+}
+
+func (downloader *downloaderImpl) addJfrogAuthentication(req *http.Request) {
+	for _, host := range downloader.jfrogRemoteAuthHosts {
+		if !strings.EqualFold(req.URL.Hostname(), host) {
+			continue
+		}
+
+		if downloader.jfrogAccessToken != "" {
+			req.Header.Set("Authorization", "Bearer "+downloader.jfrogAccessToken)
+		} else if downloader.jfrogUsername != "" && downloader.jfrogPassword != "" {
+			req.SetBasicAuth(downloader.jfrogUsername, downloader.jfrogPassword)
+		}
+		return
+	}
 }
 
 // DownloadWithChecksum starts new download task with checksum verification
