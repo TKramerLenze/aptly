@@ -59,7 +59,7 @@ func NewPackagePool(root utils.JFrogPoolStorage) (*PackagePool, error) {
 	}, nil
 }
 
-func (pool *PackagePool) ensureChecksums(poolPath string, checksumStorage aptly.ChecksumStorage) (*utils.ChecksumInfo, error) {
+func (pool *PackagePool) ensureChecksums(poolPath string, checksumStorage aptly.ChecksumStorage, remotePresent bool) (*utils.ChecksumInfo, error) {
 	targetChecksums, err := checksumStorage.Get(poolPath)
 	if err != nil {
 		return nil, fmt.Errorf("error loading checksums for %q: %w", poolPath, err)
@@ -68,18 +68,19 @@ func (pool *PackagePool) ensureChecksums(poolPath string, checksumStorage aptly.
 	if targetChecksums != nil {
 		return targetChecksums, nil
 	}
+	if !remotePresent {
+		results, err := pool.search(pool.qualifiedObjectKey(poolPath), false)
+		if err != nil {
+			return nil, fmt.Errorf("error searching jfrog package pool key %q: %w", poolPath, err)
+		}
 
-	results, err := pool.search(pool.qualifiedObjectKey(poolPath), false)
-	if err != nil {
-		return nil, fmt.Errorf("error searching jfrog package pool key %q: %w", poolPath, err)
-	}
+		if len(results) == 0 {
+			return nil, nil
+		}
 
-	if len(results) == 0 {
-		return nil, nil
-	}
-
-	if len(results) != 1 {
-		return nil, fmt.Errorf("expected exactly one search result for %q, got %d", poolPath, len(results))
+		if len(results) != 1 {
+			return nil, fmt.Errorf("expected exactly one search result for %q, got %d", poolPath, len(results))
+		}
 	}
 
 	reader, err := pool.openChecksumReader(poolPath)
@@ -126,13 +127,20 @@ func (pool *PackagePool) Import(srcPath, basename string, checksums *utils.Check
 		return "", err
 	}
 
-	targetChecksums, err := pool.ensureChecksums(poolPath, checksumStorage)
+	remoteResult, err := pool.findExactObject(poolPath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("error searching jfrog package pool key %q: %w", poolPath, err)
 	}
-	if targetChecksums != nil {
-		*checksums = *targetChecksums
-		return poolPath, nil
+
+	if remoteResult != nil {
+		targetChecksums, ensureErr := pool.ensureChecksums(poolPath, checksumStorage, true)
+		if ensureErr != nil {
+			return "", ensureErr
+		}
+		if targetChecksums != nil {
+			*checksums = *targetChecksums
+			return poolPath, nil
+		}
 	}
 
 	uploadParams := services.NewUploadParams()
@@ -182,15 +190,18 @@ func (pool *PackagePool) Verify(poolPath, basename string, checksums *utils.Chec
 		}
 	}
 
-	size, err := pool.Size(poolPath)
+	remoteResult, err := pool.findExactObject(poolPath)
 	if err != nil {
 		return "", false, fmt.Errorf("error checking size for jfrog package pool key %q: %w", poolPath, err)
 	}
-	if size != checksums.Size {
+	if remoteResult == nil {
+		return "", false, nil
+	}
+	if remoteResult.Size != checksums.Size {
 		return "", false, nil
 	}
 
-	targetChecksums, err := pool.ensureChecksums(poolPath, checksumStorage)
+	targetChecksums, err := pool.ensureChecksums(poolPath, checksumStorage, true)
 	if err != nil {
 		return "", false, err
 	}
@@ -327,6 +338,23 @@ func (pool *PackagePool) buildPoolPath(filename string, checksums *utils.Checksu
 
 func (pool *PackagePool) qualifiedObjectKey(relPath string) string {
 	return path.Join(pool.repository, pool.prefix, relPath)
+}
+
+func (pool *PackagePool) findExactObject(relPath string) (*jfrogutils.ResultItem, error) {
+	results, err := pool.search(pool.qualifiedObjectKey(relPath), false)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(results) == 0 {
+		return nil, nil
+	}
+
+	if len(results) != 1 {
+		return nil, fmt.Errorf("expected exactly one search result for %q, got %d", relPath, len(results))
+	}
+
+	return &results[0], nil
 }
 
 func (pool *PackagePool) search(pattern string, recursive bool) ([]jfrogutils.ResultItem, error) {

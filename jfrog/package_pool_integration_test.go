@@ -139,6 +139,15 @@ func (s *PackagePoolIntegrationSuite) TestImportVerifyListOpenRemoveAcrossArtifa
 		sourceChecksums, err := utils.ChecksumsForFile(artifact.path)
 		c.Assert(err, IsNil)
 
+		preImportVerifyChecksums := utils.ChecksumInfo{
+			Size:   sourceChecksums.Size,
+			SHA256: sourceChecksums.SHA256,
+		}
+		verifiedPath, exists, err := s.pool.Verify("", filepath.Base(artifact.path), &preImportVerifyChecksums, s.checksums)
+		c.Assert(err, IsNil)
+		c.Assert(exists, Equals, false)
+		c.Assert(verifiedPath, Equals, "")
+
 		importChecksums := utils.ChecksumInfo{}
 		poolPath, err := s.pool.Import(artifact.path, filepath.Base(artifact.path), &importChecksums, false, s.checksums)
 		c.Assert(err, IsNil)
@@ -149,7 +158,7 @@ func (s *PackagePoolIntegrationSuite) TestImportVerifyListOpenRemoveAcrossArtifa
 		c.Assert(importChecksums.Size, Equals, sourceChecksums.Size)
 
 		verifyChecksums := utils.ChecksumInfo{Size: sourceChecksums.Size}
-		verifiedPath, exists, err := s.pool.Verify(poolPath, filepath.Base(artifact.path), &verifyChecksums, s.checksums)
+		verifiedPath, exists, err = s.pool.Verify(poolPath, filepath.Base(artifact.path), &verifyChecksums, s.checksums)
 		c.Assert(err, IsNil)
 		c.Assert(exists, Equals, true)
 		c.Assert(verifiedPath, Equals, poolPath)

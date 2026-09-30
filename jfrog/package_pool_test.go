@@ -129,6 +129,12 @@ func (s *PackagePoolSuite) TestImportDeduplicatesWithoutSecondUpload(c *C) {
 	poolPath, err := s.pool.Import(s.debFile, filepath.Base(s.debFile), &firstChecksums, false, s.cs)
 	c.Assert(err, IsNil)
 	c.Assert(len(s.manager.uploadParams), Equals, 1)
+	s.manager.searchReader = createReader(c, []jfrogutils.ResultItem{{
+		Repo: "repo",
+		Path: path.Join("prefix", "c7", "6b"),
+		Name: "4bd12fd92e4dfe1b55b18a67a669_libboost-program-options-dev_1.49.0.1_i386.deb",
+		Size: 2738,
+	}})
 
 	secondChecksums := utils.ChecksumInfo{}
 	poolPathAgain, err := s.pool.Import(s.debFile, filepath.Base(s.debFile), &secondChecksums, false, s.cs)
@@ -136,6 +142,34 @@ func (s *PackagePoolSuite) TestImportDeduplicatesWithoutSecondUpload(c *C) {
 	c.Assert(poolPathAgain, Equals, poolPath)
 	c.Assert(len(s.manager.uploadParams), Equals, 1)
 	c.Assert(secondChecksums.SHA512, Equals, s.debChecksums.SHA512)
+}
+
+func (s *PackagePoolSuite) TestImportUploadsWhenStorageHasChecksumsButRemoteObjectIsMissing(c *C) {
+	checksums := utils.ChecksumInfo{}
+	s.manager.searchReader = createReader(c, []jfrogutils.ResultItem{})
+	poolPath, err := s.pool.buildPoolPath(filepath.Base(s.debFile), &s.debChecksums)
+	c.Assert(err, IsNil)
+
+	s.cs.(*files.MockChecksumStorage).Store[poolPath] = utils.ChecksumInfo{
+		Size:   s.debChecksums.Size,
+		MD5:    "stale-md5",
+		SHA256: s.debChecksums.SHA256,
+		SHA512: "stale-sha512",
+	}
+
+	importPath, importErr := s.pool.Import(s.debFile, filepath.Base(s.debFile), &checksums, false, s.cs)
+	c.Assert(importErr, IsNil)
+	c.Assert(importPath, Equals, poolPath)
+	c.Assert(len(s.manager.uploadParams), Equals, 1)
+	c.Assert(s.manager.uploadParams[0].Target, Equals, path.Join("repo", "prefix", poolPath))
+	c.Assert(checksums.MD5, Equals, s.debChecksums.MD5)
+	c.Assert(checksums.SHA256, Equals, s.debChecksums.SHA256)
+	c.Assert(checksums.SHA512, Equals, s.debChecksums.SHA512)
+
+	stored := s.cs.(*files.MockChecksumStorage).Store[poolPath]
+	c.Assert(stored.MD5, Equals, s.debChecksums.MD5)
+	c.Assert(stored.SHA256, Equals, s.debChecksums.SHA256)
+	c.Assert(stored.SHA512, Equals, s.debChecksums.SHA512)
 }
 
 func (s *PackagePoolSuite) TestImportRecalculatesFromRemoteWhenStorageMisses(c *C) {
@@ -240,7 +274,7 @@ func (s *PackagePoolSuite) TestImportErrorsWhenRemoteSearchReturnsMultipleObject
 
 	poolPath, err := s.pool.Import(s.debFile, filepath.Base(s.debFile), &checksums, false, s.cs)
 	c.Assert(poolPath, Equals, "")
-	c.Assert(err, ErrorMatches, "expected exactly one search result for .* got 2")
+	c.Assert(err, ErrorMatches, "error searching jfrog package pool key .* expected exactly one search result for .* got 2")
 	c.Assert(len(s.manager.uploadParams), Equals, 0)
 }
 
@@ -364,7 +398,7 @@ func (s *PackagePoolSuite) TestVerifyMissingObjectReturnsLookupError(c *C) {
 	verifiedPath, exists, verifyErr := s.pool.Verify(poolPath, filepath.Base(s.debFile), &utils.ChecksumInfo{Size: s.debChecksums.Size}, s.cs)
 	c.Assert(verifiedPath, Equals, "")
 	c.Assert(exists, Equals, false)
-	c.Assert(verifyErr, ErrorMatches, "error checking size for jfrog package pool key .* expected exactly one search result.*")
+	c.Assert(verifyErr, IsNil)
 }
 
 func (s *PackagePoolSuite) TestVerifyRecalculatesAndReplacesChecksumsWhenStorageIsEmpty(c *C) {
