@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	pathutil "path"
 	"strings"
 
 	"github.com/aptly-dev/aptly/aptly"
@@ -22,29 +22,36 @@ type PublishedStorage struct {
 	manager        artifactory.ArtifactoryServicesManager
 	repository     string
 	prefix         string
+	url            string
 	plusWorkaround bool
+	serverSideCopy bool
 }
 
 // Check interface
 var (
-	_ aptly.PublishedStorage = (*PublishedStorage)(nil)
+	_                     aptly.PublishedStorage = (*PublishedStorage)(nil)
+	newArtifactoryManager                        = artifactory.New
 )
 
-func createPublishedStorageConfig(url, user, password, apiKey, accessToken string) (config.Config, error) {
+func normalizeArtifactoryURL(rawURL string) string {
+	return strings.TrimRight(strings.TrimSpace(rawURL), "/")
+}
+
+func createJFrogConfig(url, user, password, apiKey, accessToken string, retries int) (config.Config, error) {
 	artDetails := auth.NewArtifactoryDetails()
 	artDetails.SetUrl(url)
 
 	if user == "" {
-		user = os.Getenv("JFROG_USERNAME");
+		user = os.Getenv("JFROG_USERNAME")
 	}
 	if password == "" {
-		password = os.Getenv("JFROG_PASSWORD");
+		password = os.Getenv("JFROG_PASSWORD")
 	}
 	if apiKey == "" {
-		apiKey = os.Getenv("JFROG_APIKEY");
+		apiKey = os.Getenv("JFROG_APIKEY")
 	}
 	if accessToken == "" {
-		accessToken = os.Getenv("JFROG_ACCESSTOKEN");
+		accessToken = os.Getenv("JFROG_ACCESSTOKEN")
 	}
 
 	hasUserPassword := user != "" && password != ""
@@ -64,21 +71,22 @@ func createPublishedStorageConfig(url, user, password, apiKey, accessToken strin
 	return config.NewConfigBuilder().
 		SetServiceDetails(artDetails).
 		SetDryRun(false).
+		SetHttpRetries(retries).
 		Build()
 }
 
 // NewPublishedStorageRaw creates jfrog PublishedStorage from raw connection specs
 func NewPublishedStorageRaw(
 	repository, url, user, password, apiKey, accessToken, prefix string,
-	plusWorkaround, debug bool,
+	plusWorkaround, debug bool, uploadRetries int,
 ) (*PublishedStorage, error) {
 
-	serviceConfig, err := createPublishedStorageConfig(url, user, password, apiKey, accessToken)
+	serviceConfig, err := createJFrogConfig(url, user, password, apiKey, accessToken, uploadRetries)
 	if err != nil {
 		return nil, errors.Wrap(err, "error building jfrog client config")
 	}
 
-	manager, err := artifactory.New(serviceConfig)
+	manager, err := newArtifactoryManager(serviceConfig)
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating jfrog manager")
 	}
@@ -87,17 +95,24 @@ func NewPublishedStorageRaw(
 		manager:        manager,
 		repository:     repository,
 		prefix:         prefix,
+		url:            normalizeArtifactoryURL(url),
 		plusWorkaround: plusWorkaround,
 	}, nil
 }
 
 // NewPublishedStorage creates published storage from aptly configuration struct
 func NewPublishedStorage(
-	account string, root aptly_utils.JFrogPublishRoot,
+	account string, root aptly_utils.JFrogPublishRoot, uploadRetries int,
 ) (*PublishedStorage, error) {
-	return NewPublishedStorageRaw(
+	storage, err := NewPublishedStorageRaw(
 		root.Repository, root.URL, root.User, root.Password, root.APIKey, root.AccessToken,
-		root.Prefix, root.PlusWorkaround, root.Debug)
+		root.Prefix, root.PlusWorkaround, root.Debug, uploadRetries)
+	if err != nil {
+		return nil, err
+	}
+
+	storage.serverSideCopy = root.ServerSideCopy
+	return storage, nil
 }
 
 func (storage *PublishedStorage) String() string {
@@ -109,7 +124,7 @@ func (storage *PublishedStorage) MkDir(path string) error {
 }
 
 func (storage *PublishedStorage) PutFile(path string, sourceFilename string) error {
-    targetPath := filepath.Join(storage.repository, storage.prefix, path)
+	targetPath := pathutil.Join(storage.repository, storage.prefix, path)
 	if storage.plusWorkaround {
 		targetPath = strings.Replace(targetPath, "+", "%2B", -1)
 	}
@@ -124,7 +139,7 @@ func (storage *PublishedStorage) PutFile(path string, sourceFilename string) err
 }
 
 func (storage *PublishedStorage) Remove(path string) error {
-	targetPath := filepath.Join(storage.repository, storage.prefix, path)
+	targetPath := pathutil.Join(storage.repository, storage.prefix, path)
 	if storage.plusWorkaround {
 		targetPath = strings.Replace(targetPath, "+", "%2B", -1)
 	}
@@ -146,6 +161,30 @@ func (storage *PublishedStorage) RemoveDirs(path string, progress aptly.Progress
 }
 
 func (storage *PublishedStorage) LinkFromPool(publishedPrefix, publishedRelPath, fileName string, sourcePool aptly.PackagePool, sourcePath string, sourceMD5 aptly_utils.ChecksumInfo, force bool) error {
+	if pool, ok := sourcePool.(*PackagePool); ok && storage.serverSideCopy && storage.url == pool.url {
+		sourceKey := pool.qualifiedObjectKey(sourcePath)
+		targetKey := pathutil.Join(storage.repository, storage.prefix, publishedPrefix, publishedRelPath, fileName)
+		if storage.plusWorkaround {
+			sourceKey = strings.Replace(sourceKey, "+", "%2B", -1)
+			targetKey = strings.Replace(targetKey, "+", "%2B", -1)
+		}
+
+		params := services.NewMoveCopyParams()
+		params.Pattern = sourceKey
+		params.Target = targetKey
+		params.Flat = true
+
+		copied, failed, err := storage.manager.Copy(params)
+		if err != nil {
+			return fmt.Errorf("error copying %q to %q: %w", sourceKey, targetKey, err)
+		}
+		if copied != 1 || failed != 0 {
+			return fmt.Errorf("error copying %q to %q: expected copied=1 and failed=0, got copied=%d failed=%d", sourceKey, targetKey, copied, failed)
+		}
+
+		return nil
+	}
+
 	sourceFilename := sourcePath
 	cleanup := func() {}
 
@@ -184,11 +223,11 @@ func (storage *PublishedStorage) LinkFromPool(publishedPrefix, publishedRelPath,
 
 	defer cleanup()
 
-	return storage.PutFile(filepath.Join(publishedPrefix, publishedRelPath, fileName), sourceFilename)
+	return storage.PutFile(pathutil.Join(publishedPrefix, publishedRelPath, fileName), sourceFilename)
 }
 
 func (storage *PublishedStorage) Filelist(prefix string) ([]string, error) {
-    searchPattern := filepath.Join(storage.repository, storage.prefix, prefix, "*")
+	searchPattern := pathutil.Join(storage.repository, storage.prefix, prefix, "*")
 	params := services.NewSearchParams()
 	params.Pattern = searchPattern
 
@@ -213,8 +252,8 @@ func (storage *PublishedStorage) Filelist(prefix string) ([]string, error) {
 }
 
 func (storage *PublishedStorage) RenameFile(oldName, newName string) error {
-	oldTarget := filepath.Join(storage.repository, storage.prefix, oldName)
-	newTarget := filepath.Join(storage.repository, storage.prefix, newName)
+	oldTarget := pathutil.Join(storage.repository, storage.prefix, oldName)
+	newTarget := pathutil.Join(storage.repository, storage.prefix, newName)
 
 	if storage.plusWorkaround {
 		oldTarget = strings.Replace(oldTarget, "+", "%2B", -1)
@@ -231,8 +270,8 @@ func (storage *PublishedStorage) RenameFile(oldName, newName string) error {
 }
 
 func (storage *PublishedStorage) SymLink(src string, dst string) error {
-	oldTarget := filepath.Join(storage.repository, storage.prefix, src)
-	newTarget := filepath.Join(storage.repository, storage.prefix, dst)
+	oldTarget := pathutil.Join(storage.repository, storage.prefix, src)
+	newTarget := pathutil.Join(storage.repository, storage.prefix, dst)
 
 	if storage.plusWorkaround {
 		oldTarget = strings.Replace(oldTarget, "+", "%2B", -1)
@@ -248,8 +287,15 @@ func (storage *PublishedStorage) SymLink(src string, dst string) error {
 	props.AddProperty("SymLink", src)
 	params.SetTargetProps(props)
 
-	_, _, err := storage.manager.Copy(params)
-	return err
+	copied, failed, err := storage.manager.Copy(params)
+	if err != nil {
+		return err
+	}
+	if copied != 1 || failed != 0 {
+		return fmt.Errorf("error copying %q to %q: expected copied=1 and failed=0, got copied=%d failed=%d", oldTarget, newTarget, copied, failed)
+	}
+
+	return nil
 }
 
 func (storage *PublishedStorage) HardLink(src string, dst string) error {
@@ -257,7 +303,7 @@ func (storage *PublishedStorage) HardLink(src string, dst string) error {
 }
 
 func (storage *PublishedStorage) FileExists(path string) (bool, error) {
-    targetPath := filepath.Join(storage.repository, storage.prefix, path)
+	targetPath := pathutil.Join(storage.repository, storage.prefix, path)
 	if storage.plusWorkaround {
 		targetPath = strings.Replace(targetPath, "+", "%2B", -1)
 	}
@@ -277,7 +323,7 @@ func (storage *PublishedStorage) FileExists(path string) (bool, error) {
 }
 
 func (storage *PublishedStorage) ReadLink(path string) (string, error) {
-    targetPath := filepath.Join(storage.repository, storage.prefix, path)
+	targetPath := pathutil.Join(storage.repository, storage.prefix, path)
 	if storage.plusWorkaround {
 		targetPath = strings.Replace(targetPath, "+", "%2B", -1)
 	}
@@ -288,9 +334,9 @@ func (storage *PublishedStorage) ReadLink(path string) (string, error) {
 	}
 
 	for k, v := range props.Properties {
-	    if k == "SymLink" && len(v) > 0 {
-	        return v[0], nil
-	    }
+		if k == "SymLink" && len(v) > 0 {
+			return v[0], nil
+		}
 	}
 
 	return "", nil

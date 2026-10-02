@@ -13,6 +13,7 @@ import (
 	"github.com/aptly-dev/aptly/pgp"
 	"github.com/aptly-dev/aptly/query"
 	"github.com/aptly-dev/aptly/task"
+	"github.com/aptly-dev/aptly/utils"
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 )
@@ -734,12 +735,7 @@ func apiMirrorsUpdate(c *gin.Context) {
 						if pp, ok := context.PackagePool().(aptly.LocalPackagePool); ok {
 							task.TempDownPath, e = pp.GenerateTempPath(task.File.Filename)
 						} else {
-							var file *os.File
-							file, e = os.CreateTemp("", task.File.Filename)
-							if e == nil {
-								task.TempDownPath = file.Name()
-								_ = file.Close()
-							}
+							task.TempDownPath, e = utils.CreateTempPath(task.File.Filename)
 						}
 						if e != nil {
 							pushError(e)

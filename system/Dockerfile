@@ -1,14 +1,19 @@
+# syntax=docker/dockerfile:1.7
+FROM node:22-bookworm-slim AS node
+
 FROM debian:trixie-slim
+
+COPY --from=node /usr/local/ /usr/local/
 
 RUN echo 'deb http://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list && \
     apt-get update -y && apt-get install -y --no-install-recommends curl gnupg bzip2 xz-utils ca-certificates vim procps \
-        golang-1.26 golang-1.26-go golang-1.26-src \
-        make git python3 python3-requests-unixsocket python3-termcolor python3-swiftclient python3-boto3 python3-azure-storage \
-        g++ python3-etcd3 python3-plyvel graphviz devscripts sudo dh-golang binutils-i686-linux-gnu binutils-aarch64-linux-gnu \
-        binutils-arm-linux-gnueabihf bash-completion zip ruby-dev lintian npm \
-        libc6-dev-i386-cross libc6-dev-armhf-cross libc6-dev-arm64-cross \
-        gcc-i686-linux-gnu gcc-arm-linux-gnueabihf gcc-aarch64-linux-gnu \
-        faketime dput-ng && \
+    golang-1.26 golang-1.26-go golang-1.26-src \
+    make git python3 python3-requests-unixsocket python3-termcolor python3-swiftclient python3-boto3 python3-azure-storage \
+    g++ python3-etcd3 python3-plyvel graphviz devscripts sudo dh-golang binutils-i686-linux-gnu binutils-aarch64-linux-gnu \
+    binutils-arm-linux-gnueabihf bash-completion zip ruby-dev lintian \
+    libc6-dev-i386-cross libc6-dev-armhf-cross libc6-dev-arm64-cross \
+    gcc-i686-linux-gnu gcc-arm-linux-gnueabihf gcc-aarch64-linux-gnu \
+    faketime dput-ng && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
     ln -sf /usr/lib/go-1.26/bin/go /usr/local/bin/go && \
     ln -sf /usr/lib/go-1.26/bin/gofmt /usr/local/bin/gofmt
@@ -26,6 +31,8 @@ RUN cd /var/lib/aptly; git clone https://github.com/aptly-dev/aptly-fixture-pool
 RUN cd /var/lib/aptly; curl -O http://repo.aptly.info/system-tests/etcd.db.xz && xz -d etcd.db.xz
 RUN echo "aptly ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/aptly
 ADD system/t13_etcd/install-etcd.sh /src/
-RUN /src/install-etcd.sh
+RUN sed -i 's/\r$//' /src/install-etcd.sh && /src/install-etcd.sh
 RUN rm -rf /src
-RUN npm install -g azurite
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
+    --mount=type=secret,id=company_ca,target=/run/secrets/company-ca.crt \
+    NPM_CONFIG_CAFILE=/run/secrets/company-ca.crt npm install -g azurite

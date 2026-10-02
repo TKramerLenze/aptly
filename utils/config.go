@@ -47,6 +47,7 @@ type ConfigStructure struct { // nolint: maligned
 	DownloadConcurrency    int      `json:"downloadConcurrency"           yaml:"download_concurrency"`
 	DownloadLimit          int64    `json:"downloadSpeedLimit"            yaml:"download_limit"`
 	DownloadRetries        int      `json:"downloadRetries"               yaml:"download_retries"`
+	UploadRetries          int      `json:"uploadRetries"                 yaml:"upload_retries"`
 	DownloadSourcePackages bool     `json:"downloadSourcePackages"        yaml:"download_sourcepackages"`
 	JFrogRemoteAuthHosts   []string `json:"jfrogRemoteAuthHosts"        yaml:"jfrog_remote_auth_hosts"`
 
@@ -241,6 +242,7 @@ type JFrogPublishRoot struct {
 	AccessToken    string `json:"accessToken"                yaml:"access_token"`
 	Prefix         string `json:"prefix"                     yaml:"prefix"`
 	PlusWorkaround bool   `json:"plusWorkaround"             yaml:"plus_workaround"`
+	ServerSideCopy bool   `json:"serverSideCopy"             yaml:"server_side_copy"`
 	Debug          bool   `json:"debug"                      yaml:"debug"`
 }
 

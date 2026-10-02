@@ -5,6 +5,7 @@ import shutil
 import string
 
 from lib import BaseTest
+from jfrog_lib import JFrogTest
 
 
 def filterOutSignature(_, s):
@@ -411,6 +412,21 @@ class UpdateMirror22Test(BaseTest):
 class UpdateMirror23Test(BaseTest):
     """
     update mirrors: update with installer
+    """
+    configOverride = {"max-tries": 1}
+    sortOutput = True
+    longTest = False
+    fixtureGpg = True
+    fixtureCmds = [
+        "aptly -architectures=s390x mirror create -keyring=aptlytest.gpg -filter='installer' -with-installer stretch http://repo.aptly.info/system-tests/archive.debian.org/debian-archive/debian/ stretch main non-free",
+    ]
+    runCmd = "aptly mirror update -keyring=aptlytest.gpg stretch"
+    outputMatchPrepare = filterOutSignature
+
+
+class UpdateMirrorJFrogPoolInstallerTest(JFrogTest):
+    """
+    update mirrors: update with installer using JFrog package pool
     """
     configOverride = {"max-tries": 1}
     sortOutput = True

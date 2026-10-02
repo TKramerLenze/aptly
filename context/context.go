@@ -410,7 +410,8 @@ func (context *AptlyContext) PackagePool() aptly.PackagePool {
 			}
 		} else if storageConfig.JFrog != nil {
 			var err error
-			context.packagePool, err = jfrog.NewPackagePool(*storageConfig.JFrog)
+			context.packagePool, err = jfrog.NewPackagePool(
+				*storageConfig.JFrog, context.config().DownloadRetries, context.config().UploadRetries)
 			if err != nil {
 				Fatal(err)
 			}
@@ -507,7 +508,7 @@ func (context *AptlyContext) GetPublishedStorage(name string) (aptly.PublishedSt
 
 			var err error
 			publishedStorage, err = jfrog.NewPublishedStorage(
-				name[6:], params)
+				name[6:], params, context.config().UploadRetries)
 			if err != nil {
 				return nil, fmt.Errorf("error creating jfrog manager: %w", err)
 			}

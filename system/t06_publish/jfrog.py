@@ -59,6 +59,20 @@ class JFrogPublish1Test(JFrogTest):
         )
 
 
+class JFrogPublishServerSideCopyTest(JFrogPublish1Test):
+    """
+    publish to JFrog from a JFrog-backed package pool using server-side copy
+    """
+
+    jfrogOverrides = {"serverSideCopy": True}
+
+    def check(self):
+        super(JFrogPublishServerSideCopyTest, self).check()
+        self.check_pool_contains(
+            'libboost-program-options-dev_1.49.0.1_i386.deb'
+        )
+
+
 class JFrogPublish2Test(JFrogTest):
     """
     publish to JFrog: update after removing package from repo

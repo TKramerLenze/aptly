@@ -58,6 +58,9 @@ type fakeJFrogManager struct {
 
 	copyParams []services.MoveCopyParams
 	copyErr    error
+	copyCount  int
+	copyFailed int
+	copySet    bool
 
 	itemProps    *jfrogutils.ItemProperties
 	itemPropsErr error
@@ -160,7 +163,11 @@ func (m *fakeJFrogManager) Move(params ...services.MoveCopyParams) (int, int, er
 
 func (m *fakeJFrogManager) Copy(params ...services.MoveCopyParams) (int, int, error) {
 	m.copyParams = append(m.copyParams, params...)
-	return len(params), 0, m.copyErr
+	copied := len(params)
+	if m.copySet {
+		copied = m.copyCount
+	}
+	return copied, m.copyFailed, m.copyErr
 }
 
 func (m *fakeJFrogManager) GetItemProps(_ string) (*jfrogutils.ItemProperties, error) {
@@ -355,7 +362,7 @@ func (s *PublishedStorageSuite) TestRemoveDirsDelegatesToRemove(c *C) {
 func (s *PublishedStorageSuite) TestLinkFromPoolDelegatesToPutFile(c *C) {
 	err := s.storage.LinkFromPool("", "pool/main/p", "pkg.deb", nil, "/tmp/source.deb", aptly_utils.ChecksumInfo{}, false)
 	c.Assert(err, IsNil)
-	c.Assert(s.manager.uploadParams[0].Target, Equals, filepath.Join("repo", "prefix", "pool/main/p", "pkg.deb"))
+	c.Assert(s.manager.uploadParams[0].Target, Equals, path.Join("repo", "prefix", "pool/main/p", "pkg.deb"))
 }
 
 func (s *PublishedStorageSuite) TestLinkFromPoolUsesLocalPoolFullPath(c *C) {
@@ -381,6 +388,101 @@ func (s *PublishedStorageSuite) TestLinkFromPoolCopiesFromRemotePool(c *C) {
 	c.Assert(os.IsNotExist(statErr), Equals, true)
 }
 
+func (s *PublishedStorageSuite) TestLinkFromMatchingJFrogPoolUsesServerSideCopy(c *C) {
+	s.storage.url = normalizeArtifactoryURL(" https://artifactory.example/artifactory/ ")
+	s.storage.serverSideCopy = true
+	s.storage.plusWorkaround = true
+	pool := &PackagePool{
+		readManager:  &fakeJFrogManager{},
+		writeManager: &fakeJFrogManager{},
+		repository:   "pool-repo",
+		prefix:       "pool-prefix",
+		url:          normalizeArtifactoryURL("https://artifactory.example/artifactory"),
+		openFn: func(string) (aptly.ReadSeekerCloser, error) {
+			return nil, errors.New("copy path must not open the pool")
+		},
+	}
+
+	err := s.storage.LinkFromPool("pool", "main/a+b", "pkg+test.deb", pool, "aa/bb/package+source.deb", aptly_utils.ChecksumInfo{}, false)
+	c.Assert(err, IsNil)
+	c.Assert(s.manager.copyParams, HasLen, 1)
+	c.Assert(s.manager.copyParams[0].Pattern, Equals, path.Join("pool-repo", "pool-prefix", "aa/bb/package%2Bsource.deb"))
+	c.Assert(s.manager.copyParams[0].Target, Equals, path.Join("repo", "prefix", "pool", "main/a%2Bb", "pkg%2Btest.deb"))
+	c.Assert(s.manager.copyParams[0].Flat, Equals, true)
+	c.Assert(s.manager.uploadParams, HasLen, 0)
+}
+
+func (s *PublishedStorageSuite) TestLinkFromDifferentJFrogServerFallsBackToUpload(c *C) {
+	s.storage.url = normalizeArtifactoryURL("https://publish.example/artifactory")
+	s.storage.serverSideCopy = true
+	pool := &PackagePool{
+		readManager:  &fakeJFrogManager{},
+		writeManager: &fakeJFrogManager{},
+		repository:   "pool-repo",
+		prefix:       "pool-prefix",
+		url:          normalizeArtifactoryURL("https://pool.example/artifactory"),
+	}
+
+	err := s.storage.LinkFromPool("pool", "main", "pkg.deb", pool, "aa/bb/package.deb", aptly_utils.ChecksumInfo{}, false)
+	c.Assert(err, IsNil)
+	c.Assert(s.manager.copyParams, HasLen, 0)
+	c.Assert(s.manager.uploadParams, HasLen, 1)
+}
+
+func (s *PublishedStorageSuite) TestLinkFromJFrogPoolWithCopyDisabledFallsBackToUpload(c *C) {
+	s.storage.url = normalizeArtifactoryURL("https://artifactory.example/artifactory")
+	pool := &PackagePool{
+		readManager:  &fakeJFrogManager{},
+		writeManager: &fakeJFrogManager{},
+		repository:   "pool-repo",
+		prefix:       "pool-prefix",
+		url:          normalizeArtifactoryURL("https://artifactory.example/artifactory"),
+	}
+
+	err := s.storage.LinkFromPool("pool", "main", "pkg.deb", pool, "aa/bb/package.deb", aptly_utils.ChecksumInfo{}, false)
+	c.Assert(err, IsNil)
+	c.Assert(s.manager.copyParams, HasLen, 0)
+	c.Assert(s.manager.uploadParams, HasLen, 1)
+}
+
+func (s *PublishedStorageSuite) TestLinkFromMatchingJFrogPoolPropagatesCopyFailure(c *C) {
+	s.storage.url = normalizeArtifactoryURL("https://artifactory.example/artifactory")
+	s.storage.serverSideCopy = true
+	s.manager.copySet = true
+	s.manager.copyCount = 0
+	s.manager.copyFailed = 1
+	pool := &PackagePool{
+		readManager:  &fakeJFrogManager{},
+		writeManager: &fakeJFrogManager{},
+		repository:   "pool-repo",
+		prefix:       "pool-prefix",
+		url:          normalizeArtifactoryURL("https://artifactory.example/artifactory"),
+	}
+
+	err := s.storage.LinkFromPool("pool", "main", "pkg.deb", pool, "aa/bb/package.deb", aptly_utils.ChecksumInfo{}, false)
+	c.Assert(err, ErrorMatches, `.*pool-repo.*/aa/bb/package.deb.*repo.*/pool/main/pkg.deb.*`)
+	c.Assert(s.manager.uploadParams, HasLen, 0)
+}
+
+func (s *PublishedStorageSuite) TestLinkFromMatchingJFrogPoolPropagatesCopyError(c *C) {
+	s.storage.url = normalizeArtifactoryURL("https://artifactory.example/artifactory")
+	s.storage.serverSideCopy = true
+	s.manager.copyErr = errors.New("copy failed")
+	pool := &PackagePool{
+		readManager:  &fakeJFrogManager{},
+		writeManager: &fakeJFrogManager{},
+		repository:   "pool-repo",
+		prefix:       "pool-prefix",
+		url:          normalizeArtifactoryURL("https://artifactory.example/artifactory"),
+	}
+
+	err := s.storage.LinkFromPool("pool", "main", "pkg.deb", pool, "aa/bb/package.deb", aptly_utils.ChecksumInfo{}, false)
+	c.Assert(err, NotNil)
+	c.Assert(strings.Contains(err.Error(), path.Join("pool-repo", "pool-prefix", "aa/bb/package.deb")), Equals, true)
+	c.Assert(strings.Contains(err.Error(), path.Join("repo", "prefix", "pool", "main", "pkg.deb")), Equals, true)
+	c.Assert(s.manager.uploadParams, HasLen, 0)
+}
+
 func (s *PublishedStorageSuite) TestFilelist(c *C) {
 	s.manager.searchReader = createReader(c, []jfrogutils.ResultItem{
 		{Path: "repo/prefix/pool/main/a", Name: "a.deb", Actual_Md5: "m1"},
@@ -390,7 +492,7 @@ func (s *PublishedStorageSuite) TestFilelist(c *C) {
 	list, err := s.storage.Filelist("pool/main")
 	c.Assert(err, IsNil)
 	c.Assert(list, DeepEquals, []string{"pool/main/a/a.deb", "pool/main/b/b.deb"})
-	c.Assert(s.manager.searchParams[0].Pattern, Equals, filepath.Join("repo", "prefix", "pool/main", "*"))
+	c.Assert(s.manager.searchParams[0].Pattern, Equals, path.Join("repo", "prefix", "pool/main", "*"))
 }
 
 func (s *PublishedStorageSuite) TestFilelistPlusWorkaroundAndSearchError(c *C) {
@@ -412,8 +514,8 @@ func (s *PublishedStorageSuite) TestRenameFile(c *C) {
 	err := s.storage.RenameFile("old+name", "new+name")
 	c.Assert(err, IsNil)
 	c.Assert(len(s.manager.moveParams), Equals, 1)
-	c.Assert(s.manager.moveParams[0].Pattern, Equals, filepath.Join("repo", "prefix", "old+name"))
-	c.Assert(s.manager.moveParams[0].Target, Equals, filepath.Join("repo", "prefix", "new+name"))
+	c.Assert(s.manager.moveParams[0].Pattern, Equals, path.Join("repo", "prefix", "old+name"))
+	c.Assert(s.manager.moveParams[0].Target, Equals, path.Join("repo", "prefix", "new+name"))
 	c.Assert(s.manager.moveParams[0].Flat, Equals, true)
 }
 
@@ -422,16 +524,16 @@ func (s *PublishedStorageSuite) TestRenameFilePlusWorkaroundAndError(c *C) {
 	s.manager.moveErr = errors.New("move failed")
 	err := s.storage.RenameFile("old+name", "new+name")
 	c.Assert(err, ErrorMatches, "move failed")
-	c.Assert(s.manager.moveParams[0].Pattern, Equals, filepath.Join("repo", "prefix", "old%2Bname"))
-	c.Assert(s.manager.moveParams[0].Target, Equals, filepath.Join("repo", "prefix", "new%2Bname"))
+	c.Assert(s.manager.moveParams[0].Pattern, Equals, path.Join("repo", "prefix", "old%2Bname"))
+	c.Assert(s.manager.moveParams[0].Target, Equals, path.Join("repo", "prefix", "new%2Bname"))
 }
 
 func (s *PublishedStorageSuite) TestSymLinkAndHardLink(c *C) {
 	err := s.storage.SymLink("src+name", "dst+name")
 	c.Assert(err, IsNil)
 	c.Assert(len(s.manager.copyParams), Equals, 1)
-	c.Assert(s.manager.copyParams[0].Pattern, Equals, filepath.Join("repo", "prefix", "src+name"))
-	c.Assert(s.manager.copyParams[0].Target, Equals, filepath.Join("repo", "prefix", "dst+name"))
+	c.Assert(s.manager.copyParams[0].Pattern, Equals, path.Join("repo", "prefix", "src+name"))
+	c.Assert(s.manager.copyParams[0].Target, Equals, path.Join("repo", "prefix", "dst+name"))
 	c.Assert(s.manager.copyParams[0].Flat, Equals, true)
 	targetProps := s.manager.copyParams[0].TargetProps.ToMap()
 	c.Assert(targetProps["SymLink"], DeepEquals, []string{"src+name"})
@@ -447,8 +549,27 @@ func (s *PublishedStorageSuite) TestSymLinkPlusWorkaroundAndError(c *C) {
 
 	err := s.storage.SymLink("src+name", "dst+name")
 	c.Assert(err, ErrorMatches, "copy failed")
-	c.Assert(s.manager.copyParams[0].Pattern, Equals, filepath.Join("repo", "prefix", "src%2Bname"))
-	c.Assert(s.manager.copyParams[0].Target, Equals, filepath.Join("repo", "prefix", "dst%2Bname"))
+	c.Assert(s.manager.copyParams[0].Pattern, Equals, path.Join("repo", "prefix", "src%2Bname"))
+	c.Assert(s.manager.copyParams[0].Target, Equals, path.Join("repo", "prefix", "dst%2Bname"))
+}
+
+func (s *PublishedStorageSuite) TestSymLinkRejectsUnexpectedCopyCounts(c *C) {
+	for _, test := range []struct {
+		name   string
+		copied int
+		failed int
+	}{
+		{name: "partial copy", copied: 0, failed: 0},
+		{name: "failed copy", copied: 0, failed: 1},
+	} {
+		c.Log(test.name)
+		s.manager.copySet = true
+		s.manager.copyCount = test.copied
+		s.manager.copyFailed = test.failed
+
+		err := s.storage.SymLink("src", "dst")
+		c.Assert(err, ErrorMatches, `.*repo/prefix/src.*repo/prefix/dst.*`)
+	}
 }
 
 func (s *PublishedStorageSuite) TestFileExists(c *C) {
@@ -456,7 +577,7 @@ func (s *PublishedStorageSuite) TestFileExists(c *C) {
 	ok, err := s.storage.FileExists("pool/x")
 	c.Assert(err, IsNil)
 	c.Assert(ok, Equals, true)
-	c.Assert(s.manager.searchParams[0].Pattern, Equals, filepath.Join("repo", "prefix", "pool/x"))
+	c.Assert(s.manager.searchParams[0].Pattern, Equals, path.Join("repo", "prefix", "pool/x"))
 
 	s.manager.searchReader = content.NewEmptyContentReader("results")
 	ok, err = s.storage.FileExists("pool/y")
@@ -470,7 +591,7 @@ func (s *PublishedStorageSuite) TestFileExistsSearchErrorAndPlusWorkaround(c *C)
 	ok, err := s.storage.FileExists("pool/a+b")
 	c.Assert(ok, Equals, false)
 	c.Assert(err, ErrorMatches, "search failed")
-	c.Assert(s.manager.searchParams[0].Pattern, Equals, filepath.Join("repo", "prefix", "pool/a%2Bb"))
+	c.Assert(s.manager.searchParams[0].Pattern, Equals, path.Join("repo", "prefix", "pool/a%2Bb"))
 }
 
 func (s *PublishedStorageSuite) TestReadLink(c *C) {
@@ -511,28 +632,28 @@ func (s *PublishedStorageSuite) TestCreatePublishedStorageConfig(c *C) {
 	}))
 	defer server.Close()
 
-	withUserPassword, err := createPublishedStorageConfig(server.URL, "user", "password", "", "")
+	withUserPassword, err := createJFrogConfig(server.URL, "user", "password", "", "", 0)
 	c.Assert(err, IsNil)
 
 	withUserPasswordDetails := withUserPassword.GetServiceDetails()
 	c.Assert(withUserPasswordDetails, NotNil)
 	c.Assert(withUserPasswordDetails.GetUser(), Equals, "user")
 
-	withAPIKey, err := createPublishedStorageConfig(server.URL, "", "", "api-123", "")
+	withAPIKey, err := createJFrogConfig(server.URL, "", "", "api-123", "", 0)
 	c.Assert(err, IsNil)
 
 	withAPIKeyDetails := withAPIKey.GetServiceDetails()
 	c.Assert(withAPIKeyDetails, NotNil)
 	c.Assert(withAPIKeyDetails.GetApiKey(), Equals, "api-123")
 
-	withAccessToken, err := createPublishedStorageConfig(server.URL, "", "", "", "token")
+	withAccessToken, err := createJFrogConfig(server.URL, "", "", "", "token", 0)
 	c.Assert(err, IsNil)
 
 	withAccessTokenDetails := withAccessToken.GetServiceDetails()
 	c.Assert(withAccessTokenDetails, NotNil)
 	c.Assert(withAccessTokenDetails.GetAccessToken(), Equals, "token")
 
-	withUserPasswordFromEnv, err := createPublishedStorageConfig(server.URL, "", "password", "", "")
+	withUserPasswordFromEnv, err := createJFrogConfig(server.URL, "", "password", "", "", 0)
 	c.Assert(err, IsNil)
 
 	withUserPasswordFromEnvDetails := withUserPasswordFromEnv.GetServiceDetails()
@@ -541,8 +662,18 @@ func (s *PublishedStorageSuite) TestCreatePublishedStorageConfig(c *C) {
 }
 
 func (s *PublishedStorageSuite) TestCreatePublishedStorageConfigRequiresCredentials(c *C) {
-	_, err := createPublishedStorageConfig("https://example.jfrog.local/artifactory", "", "", "", "")
+	_, err := createJFrogConfig("https://example.jfrog.local/artifactory", "", "", "", "", 0)
 	c.Assert(err, ErrorMatches, "jfrog credentials are required: .*")
+}
+
+func (s *PublishedStorageSuite) TestCreateJFrogConfigUsesExplicitRetries(c *C) {
+	serviceConfig, err := createJFrogConfig("https://example.jfrog.io/artifactory", "user", "password", "", "", 0)
+	c.Assert(err, IsNil)
+	c.Check(serviceConfig.GetHttpRetries(), Equals, 0)
+
+	serviceConfig, err = createJFrogConfig("https://example.jfrog.io/artifactory", "user", "password", "", "", 4)
+	c.Assert(err, IsNil)
+	c.Check(serviceConfig.GetHttpRetries(), Equals, 4)
 }
 
 func (s *PublishedStorageSuite) TestNewPublishedStorageRaw(c *C) {
@@ -551,16 +682,16 @@ func (s *PublishedStorageSuite) TestNewPublishedStorageRaw(c *C) {
 	}))
 	defer server.Close()
 
-	withUserPassword, err := NewPublishedStorageRaw("repo", server.URL, "user", "password", "", "", "prefix", true, false)
+	withUserPassword, err := NewPublishedStorageRaw("repo", server.URL, "user", "password", "", "", "prefix", true, false, 0)
 	c.Assert(err, IsNil)
 	c.Assert(withUserPassword, NotNil)
 	c.Assert(withUserPassword.String(), Equals, "jfrog:repo:prefix")
 
-	withAPIKey, err := NewPublishedStorageRaw("repo", server.URL, "", "", "api-key", "", "prefix", false, false)
+	withAPIKey, err := NewPublishedStorageRaw("repo", server.URL, "", "", "api-key", "", "prefix", false, false, 0)
 	c.Assert(err, IsNil)
 	c.Assert(withAPIKey, NotNil)
 
-	withToken, err := NewPublishedStorageRaw("repo", server.URL, "", "", "", "token", "prefix", false, false)
+	withToken, err := NewPublishedStorageRaw("repo", server.URL, "", "", "", "token", "prefix", false, false, 0)
 	c.Assert(err, IsNil)
 	c.Assert(withToken, NotNil)
 }
@@ -568,7 +699,7 @@ func (s *PublishedStorageSuite) TestNewPublishedStorageRaw(c *C) {
 func (s *PublishedStorageSuite) TestNewPublishedStorageRawManagerError(c *C) {
 	// An SSH URL causes artifactory.New() to fail (no SSH key configured),
 	// exercising the error return on lines 59-61.
-	_, err := NewPublishedStorageRaw("repo", "ssh://example.local/artifactory", "", "", "", "token", "", false, false)
+	_, err := NewPublishedStorageRaw("repo", "ssh://example.local/artifactory", "", "", "", "token", "", false, false, 0)
 	c.Assert(err, ErrorMatches, "error creating jfrog manager: .*")
 }
 
@@ -584,7 +715,7 @@ func (s *PublishedStorageSuite) TestNewPublishedStorage(c *C) {
 		AccessToken:    "token",
 		Prefix:         "pref",
 		PlusWorkaround: true,
-	})
+	}, 0)
 	c.Assert(err, IsNil)
 	c.Assert(storage, NotNil)
 	c.Assert(storage.String(), Equals, "jfrog:repo:pref")

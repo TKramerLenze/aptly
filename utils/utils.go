@@ -4,6 +4,7 @@ package utils
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -22,6 +23,21 @@ func DirIsAccessible(filename string) error {
 		}
 	}
 	return nil
+}
+
+// CreateTempPath creates a temporary file for a logical package filename.
+func CreateTempPath(filename string) (string, error) {
+	file, err := os.CreateTemp("", filepath.Base(filename))
+	if err != nil {
+		return "", err
+	}
+
+	if err := file.Close(); err != nil {
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+
+	return file.Name(), nil
 }
 
 // SanitizePath removes leading '/', remove '..', '$' and '`'

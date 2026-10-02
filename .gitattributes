@@ -1,0 +1,15 @@
+deb/testdata/**/*.buildinfo text eol=lf
+deb/testdata/**/*.changes text eol=lf
+deb/testdata/**/*.dsc text eol=lf
+pgp/1.clearsigned text eol=lf
+pgp/1.cleartext text eol=lf
+pgp/1.signature text eol=lf
+pgp/1.text text eol=lf
+pgp/2.signature text eol=lf
+pgp/2.text text eol=lf
+pgp/3.signature text eol=lf
+pgp/3.text text eol=lf
+pgp/4.text text eol=lf
+pgp/test-bins/** text eol=lf
+system/docker-wrapper text eol=lf
+system/t13_etcd/start-etcd.sh text eol=lf

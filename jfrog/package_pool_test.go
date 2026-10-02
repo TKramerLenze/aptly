@@ -13,7 +13,9 @@ import (
 	"github.com/aptly-dev/aptly/aptly"
 	"github.com/aptly-dev/aptly/files"
 	"github.com/aptly-dev/aptly/utils"
+	"github.com/jfrog/jfrog-client-go/artifactory"
 	jfrogutils "github.com/jfrog/jfrog-client-go/artifactory/services/utils"
+	"github.com/jfrog/jfrog-client-go/config"
 	"github.com/jfrog/jfrog-client-go/utils/io/content"
 	. "gopkg.in/check.v1"
 )
@@ -71,9 +73,10 @@ func (r *failingCloseReadSeeker) Close() error {
 func (s *PackagePoolSuite) SetUpTest(c *C) {
 	s.manager = &fakeJFrogManager{}
 	s.pool = &PackagePool{
-		manager:    s.manager,
-		repository: "repo",
-		prefix:     "prefix",
+		readManager:  s.manager,
+		writeManager: s.manager,
+		repository:   "repo",
+		prefix:       "prefix",
 	}
 	_, currentFile, _, _ := runtime.Caller(0)
 	s.debFile = filepath.Join(filepath.Dir(currentFile), "../system/files/libboost-program-options-dev_1.49.0.1_i386.deb")
@@ -89,11 +92,94 @@ func (s *PackagePoolSuite) SetUpTest(c *C) {
 }
 
 func (s *PackagePoolSuite) TestNewPackagePoolValidation(c *C) {
-	_, err := NewPackagePool(utils.JFrogPoolStorage{Repository: "repo"})
+	_, err := NewPackagePool(utils.JFrogPoolStorage{Repository: "repo"}, 0, 0)
 	c.Assert(err, ErrorMatches, "jfrog package pool url is required")
 
-	_, err = NewPackagePool(utils.JFrogPoolStorage{URL: "https://example.jfrog.io/artifactory"})
+	_, err = NewPackagePool(utils.JFrogPoolStorage{URL: "https://example.jfrog.io/artifactory"}, 0, 0)
 	c.Assert(err, ErrorMatches, "jfrog package pool repository is required")
+}
+
+func (s *PackagePoolSuite) TestNewPackagePoolCreatesManagersWithExplicitRetries(c *C) {
+	previousFactory := newArtifactoryManager
+	defer func() { newArtifactoryManager = previousFactory }()
+
+	configs := []config.Config{}
+	newArtifactoryManager = func(serviceConfig config.Config) (artifactory.ArtifactoryServicesManager, error) {
+		configs = append(configs, serviceConfig)
+		return &fakeJFrogManager{}, nil
+	}
+
+	pool, err := NewPackagePool(utils.JFrogPoolStorage{
+		Repository: "repo",
+		URL:        "https://example.jfrog.io/artifactory",
+		User:       "user",
+		Password:   "password",
+	}, 2, 5)
+	c.Assert(err, IsNil)
+	c.Assert(pool, NotNil)
+	c.Assert(configs, HasLen, 2)
+	c.Check(configs[0].GetHttpRetries(), Equals, 2)
+	c.Check(configs[1].GetHttpRetries(), Equals, 5)
+}
+
+func (s *PackagePoolSuite) TestSearchAndOpenUseReadManager(c *C) {
+	readManager := &fakeJFrogManager{searchReader: createReader(c, []jfrogutils.ResultItem{})}
+	writeManager := &fakeJFrogManager{}
+	pool := &PackagePool{
+		readManager:  readManager,
+		writeManager: writeManager,
+		repository:   "repo",
+		prefix:       "prefix",
+	}
+
+	_, err := pool.FilepathList(nil)
+	c.Assert(err, IsNil)
+	_, err = pool.Open("path/package.deb")
+	c.Assert(err, IsNil)
+	c.Assert(readManager.searchParams, HasLen, 1)
+	c.Assert(readManager.downloadParams, HasLen, 1)
+	c.Assert(writeManager.searchParams, HasLen, 0)
+	c.Assert(writeManager.downloadParams, HasLen, 0)
+}
+
+func (s *PackagePoolSuite) TestImportUsesWriteManager(c *C) {
+	readManager := &fakeJFrogManager{searchReader: createReader(c, []jfrogutils.ResultItem{})}
+	writeManager := &fakeJFrogManager{}
+	pool := &PackagePool{
+		readManager:  readManager,
+		writeManager: writeManager,
+		repository:   "repo",
+		prefix:       "prefix",
+	}
+	checksums := utils.ChecksumInfo{}
+
+	_, err := pool.Import(s.debFile, filepath.Base(s.debFile), &checksums, false, s.cs)
+	c.Assert(err, IsNil)
+	c.Assert(readManager.searchParams, HasLen, 1)
+	c.Assert(readManager.uploadParams, HasLen, 0)
+	c.Assert(writeManager.uploadParams, HasLen, 1)
+}
+
+func (s *PackagePoolSuite) TestRemoveUsesReadAndWriteManagers(c *C) {
+	relPath := "c7/6b/4bd12fd92e4dfe1b55b18a67a669_package.deb"
+	readManager := &fakeJFrogManager{
+		searchReader:     createReader(c, []jfrogutils.ResultItem{{Repo: "repo", Path: "prefix/c7/6b", Name: "4bd12fd92e4dfe1b55b18a67a669_package.deb", Size: 2738}}),
+		getPathsToDelete: createReader(c, []jfrogutils.ResultItem{}),
+	}
+	writeManager := &fakeJFrogManager{}
+	pool := &PackagePool{
+		readManager:  readManager,
+		writeManager: writeManager,
+		repository:   "repo",
+		prefix:       "prefix",
+	}
+
+	_, err := pool.Remove(relPath)
+	c.Assert(err, IsNil)
+	c.Assert(readManager.deleteParams, HasLen, 1)
+	c.Assert(readManager.deleteCalled, Equals, false)
+	c.Assert(writeManager.deleteParams, HasLen, 0)
+	c.Assert(writeManager.deleteCalled, Equals, true)
 }
 
 func (s *PackagePoolSuite) TestLegacyPath(c *C) {

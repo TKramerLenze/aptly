@@ -22,12 +22,16 @@ func (s *ConfigSuite) TestLoadConfig(c *C) {
 
 	// start with empty config
 	s.config = ConfigStructure{}
+	var defaults ConfigStructure
 
 	err := LoadConfig(configname, &s.config)
 	c.Assert(err, IsNil)
 	c.Check(s.config.GetRootDir(), Equals, "/opt/aptly/")
 	c.Check(s.config.DownloadConcurrency, Equals, 33)
 	c.Check(s.config.DatabaseOpenAttempts, Equals, 33)
+	c.Check(s.config.DownloadRetries, Equals, 2)
+	c.Check(s.config.UploadRetries, Equals, 5)
+	c.Check(defaults.UploadRetries, Equals, 0)
 }
 
 func (s *ConfigSuite) TestLoadConfigJFrogPoolStorage(c *C) {
@@ -41,6 +45,8 @@ func (s *ConfigSuite) TestLoadConfigJFrogPoolStorage(c *C) {
 
 	err := LoadConfig(configname, &s.config)
 	c.Assert(err, IsNil)
+	c.Check(s.config.JFrogPublishRoots["copy-enabled"].ServerSideCopy, Equals, true)
+	c.Check(s.config.JFrogPublishRoots["copy-default"].ServerSideCopy, Equals, false)
 
 	roundTrip := filepath.Join(c.MkDir(), "roundtrip-jfrog.json")
 	err = SaveConfig(roundTrip, &s.config)
@@ -58,6 +64,7 @@ func (s *ConfigSuite) TestLoadConfigJFrogPoolStorage(c *C) {
 	c.Assert(strings.Contains(out, `"apiKey": "test-api-key"`), Equals, true)
 	c.Assert(strings.Contains(out, `"accessToken": "test-token"`), Equals, true)
 	c.Assert(strings.Contains(out, `"prefix": "aptly-pool"`), Equals, true)
+	c.Assert(strings.Contains(out, `"serverSideCopy": true`), Equals, true)
 }
 
 func (s *ConfigSuite) TestSaveConfig(c *C) {
@@ -68,6 +75,8 @@ func (s *ConfigSuite) TestSaveConfig(c *C) {
 
 	s.config.RootDir = "/tmp/aptly"
 	s.config.DownloadConcurrency = 5
+	s.config.DownloadRetries = 2
+	s.config.UploadRetries = 5
 	s.config.DatabaseOpenAttempts = 5
 	s.config.GpgProvider = "gpg"
 
@@ -135,8 +144,10 @@ func (s *ConfigSuite) TestSaveConfig(c *C) {
   "downloader": "",
   "downloadConcurrency": 5,
   "downloadSpeedLimit": 0,
-  "downloadRetries": 0,
+  "downloadRetries": 2,
+  "uploadRetries": 5,
   "downloadSourcePackages": false,
+  "jfrogRemoteAuthHosts": null,
   "gpgProvider": "gpg",
   "gpgDisableSign": false,
   "gpgDisableVerify": false,
@@ -160,6 +171,7 @@ func (s *ConfigSuite) TestSaveConfig(c *C) {
       "accessToken": "",
       "prefix": "",
       "plusWorkaround": false,
+      "serverSideCopy": false,
       "debug": false
     }
   },
@@ -242,6 +254,8 @@ func (s *ConfigSuite) TestLoadYAMLConfig(c *C) {
 	c.Check(s.config.GetRootDir(), Equals, "/opt/aptly/")
 	c.Check(s.config.DownloadConcurrency, Equals, 40)
 	c.Check(s.config.DatabaseOpenAttempts, Equals, 10)
+	c.Check(s.config.DownloadRetries, Equals, 2)
+	c.Check(s.config.UploadRetries, Equals, 5)
 }
 
 func (s *ConfigSuite) TestLoadYAMLConfigJFrogPoolStorage(c *C) {
@@ -255,6 +269,8 @@ func (s *ConfigSuite) TestLoadYAMLConfigJFrogPoolStorage(c *C) {
 
 	err := LoadConfig(configname, &s.config)
 	c.Assert(err, IsNil)
+	c.Check(s.config.JFrogPublishRoots["copy-enabled"].ServerSideCopy, Equals, true)
+	c.Check(s.config.JFrogPublishRoots["copy-default"].ServerSideCopy, Equals, false)
 
 	roundTrip := filepath.Join(c.MkDir(), "roundtrip-jfrog.yaml")
 	err = SaveConfigYAML(roundTrip, &s.config)
@@ -272,6 +288,7 @@ func (s *ConfigSuite) TestLoadYAMLConfigJFrogPoolStorage(c *C) {
 	c.Assert(strings.Contains(out, "api_key: test-api-key\n"), Equals, true)
 	c.Assert(strings.Contains(out, "access_token: test-token\n"), Equals, true)
 	c.Assert(strings.Contains(out, "prefix: aptly-pool\n"), Equals, true)
+	c.Assert(strings.Contains(out, "server_side_copy: true\n"), Equals, true)
 }
 
 func (s *ConfigSuite) TestLoadYAMLErrorConfig(c *C) {
@@ -361,7 +378,9 @@ func (s *ConfigSuite) TestSaveYAML2Config(c *C) {
 		"download_concurrency: 0\n"+
 		"download_limit: 0\n"+
 		"download_retries: 0\n"+
+		"upload_retries: 0\n"+
 		"download_sourcepackages: false\n"+
+		"jfrog_remote_auth_hosts: []\n"+
 		"gpg_provider: \"\"\n"+
 		"gpg_disable_sign: false\n"+
 		"gpg_disable_verify: false\n"+
@@ -391,9 +410,20 @@ func (s *ConfigSuite) TestLoadEmptyConfig(c *C) {
 	c.Assert(err.Error(), Equals, "invalid yaml (EOF) or json (EOF)")
 }
 
-const configFile = `{"rootDir": "/opt/aptly/", "downloadConcurrency": 33, "databaseOpenAttempts": 33}`
+const configFile = `{"rootDir": "/opt/aptly/", "downloadConcurrency": 33, "databaseOpenAttempts": 33, "downloadRetries": 2, "uploadRetries": 5}`
 const configFileJFrogJSON = `{
   "rootDir": "/opt/aptly/",
+  "JFrogPublishEndpoints": {
+    "copy-enabled": {
+      "repository": "published",
+      "url": "https://artifactory.example/artifactory",
+      "serverSideCopy": true
+    },
+    "copy-default": {
+      "repository": "published-default",
+      "url": "https://artifactory.example/artifactory"
+    }
+  },
   "packagePoolStorage": {
     "type": "jfrog",
     "repository": "team-debian-aptly-backend",
@@ -432,8 +462,10 @@ database_backend:
 downloader: grab
 download_concurrency: 40
 download_limit: 100
-download_retries: 10
+download_retries: 2
+upload_retries: 5
 download_sourcepackages: true
+jfrog_remote_auth_hosts: []
 gpg_provider: gpg
 gpg_disable_sign: true
 gpg_disable_verify: true
@@ -509,6 +541,14 @@ const configFileYAMLError = `packagepool_storage:
 `
 
 const configFileYAMLJFrog = `root_dir: /opt/aptly/
+jfrog_publish_endpoints:
+  copy-enabled:
+    repository: published
+    url: https://artifactory.example/artifactory
+    server_side_copy: true
+  copy-default:
+    repository: published-default
+    url: https://artifactory.example/artifactory
 packagepool_storage:
   type: jfrog
   repository: team-debian-aptly-backend

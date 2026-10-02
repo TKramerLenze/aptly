@@ -19,16 +19,18 @@ import (
 
 // PackagePool is a JFrog-backed package pool implementation.
 type PackagePool struct {
-	manager    artifactory.ArtifactoryServicesManager
-	repository string
-	prefix     string
-	openFn     func(relPath string) (aptly.ReadSeekerCloser, error)
+	readManager  artifactory.ArtifactoryServicesManager
+	writeManager artifactory.ArtifactoryServicesManager
+	repository   string
+	prefix       string
+	url          string
+	openFn       func(relPath string) (aptly.ReadSeekerCloser, error)
 }
 
 var _ aptly.PackagePool = (*PackagePool)(nil)
 
 // NewPackagePool validates configuration and builds a JFrog client manager without network I/O.
-func NewPackagePool(root utils.JFrogPoolStorage) (*PackagePool, error) {
+func NewPackagePool(root utils.JFrogPoolStorage, downloadRetries, uploadRetries int) (*PackagePool, error) {
 	if strings.TrimSpace(root.URL) == "" {
 		return nil, fmt.Errorf("jfrog package pool url is required")
 	}
@@ -36,26 +38,46 @@ func NewPackagePool(root utils.JFrogPoolStorage) (*PackagePool, error) {
 		return nil, fmt.Errorf("jfrog package pool repository is required")
 	}
 
-	serviceConfig, err := createPublishedStorageConfig(
+	readConfig, err := createJFrogConfig(
 		root.URL,
 		root.User,
 		root.Password,
 		root.APIKey,
 		root.AccessToken,
+		downloadRetries,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error building jfrog package pool client config: %w", err)
 	}
 
-	manager, err := artifactory.New(serviceConfig)
+	readManager, err := newArtifactoryManager(readConfig)
+	if err != nil {
+		return nil, fmt.Errorf("error creating jfrog package pool manager: %w", err)
+	}
+
+	writeConfig, err := createJFrogConfig(
+		root.URL,
+		root.User,
+		root.Password,
+		root.APIKey,
+		root.AccessToken,
+		uploadRetries,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error building jfrog package pool client config: %w", err)
+	}
+
+	writeManager, err := newArtifactoryManager(writeConfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating jfrog package pool manager: %w", err)
 	}
 
 	return &PackagePool{
-		manager:    manager,
-		repository: root.Repository,
-		prefix:     root.Prefix,
+		readManager:  readManager,
+		writeManager: writeManager,
+		repository:   root.Repository,
+		prefix:       root.Prefix,
+		url:          normalizeArtifactoryURL(root.URL),
 	}, nil
 }
 
@@ -148,7 +170,7 @@ func (pool *PackagePool) Import(srcPath, basename string, checksums *utils.Check
 	uploadParams.Target = pool.qualifiedObjectKey(poolPath)
 	uploadParams.Flat = true
 
-	uploaded, failed, err := pool.manager.UploadFiles(artifactory.UploadServiceOptions{}, uploadParams)
+	uploaded, failed, err := pool.writeManager.UploadFiles(artifactory.UploadServiceOptions{}, uploadParams)
 	if err != nil {
 		return "", fmt.Errorf("error uploading %q to jfrog package pool key %q: %w", srcPath, poolPath, err)
 	}
@@ -250,7 +272,7 @@ func (pool *PackagePool) Open(relPath string) (aptly.ReadSeekerCloser, error) {
 	download.Target = tempDir + string(os.PathSeparator)
 	download.Flat = true
 
-	downloaded, failed, err := pool.manager.DownloadFiles(download)
+	downloaded, failed, err := pool.readManager.DownloadFiles(download)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("error downloading %q from jfrog package pool: %w", relPath, err)
@@ -309,13 +331,13 @@ func (pool *PackagePool) Remove(relPath string) (int64, error) {
 	deleteParams := services.NewDeleteParams()
 	deleteParams.SetPattern(pool.qualifiedObjectKey(relPath))
 
-	toDelete, err := pool.manager.GetPathsToDelete(deleteParams)
+	toDelete, err := pool.readManager.GetPathsToDelete(deleteParams)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = toDelete.Close() }()
 
-	if _, err := pool.manager.DeleteFiles(toDelete); err != nil {
+	if _, err := pool.writeManager.DeleteFiles(toDelete); err != nil {
 		return 0, err
 	}
 
@@ -362,7 +384,7 @@ func (pool *PackagePool) search(pattern string, recursive bool) ([]jfrogutils.Re
 	params.Pattern = pattern
 	params.Recursive = recursive
 
-	reader, err := pool.manager.SearchFiles(params)
+	reader, err := pool.readManager.SearchFiles(params)
 	if err != nil {
 		return nil, err
 	}

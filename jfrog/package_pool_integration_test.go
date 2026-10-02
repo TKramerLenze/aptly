@@ -83,7 +83,7 @@ func (s *PackagePoolIntegrationSuite) SetUpTest(c *C) {
 		APIKey:      envSnapshot.APIKey,
 		AccessToken: envSnapshot.AccessToken,
 		Prefix:      prefix,
-	})
+	}, 0, 0)
 	c.Assert(err, IsNil)
 
 	s.pool = pool

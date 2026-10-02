@@ -17,7 +17,29 @@ var _ = Suite(&GnupgSuite{})
 
 func (s *GnupgSuite) SetUpSuite(c *C) {
 	_, _File, _, _ := runtime.Caller(0)
-	s.bins = filepath.Join(filepath.Dir(_File), "test-bins")
+	s.bins = c.MkDir()
+	fixtureBins := filepath.Join(filepath.Dir(_File), "test-bins")
+
+	for _, fixture := range []struct {
+		source      string
+		destination string
+	}{
+		{"gpg2-and-1/gpg", "gpg2-and-1/gpg"},
+		{"gpg2-and-1/gpg1", "gpg2-and-1/gpg1"},
+		{"gpg2-and-1/gpg1", "gpg1/gpg"},
+		{"gpg2-and-1/gpg", "gpg2-only/gpg"},
+		{"gpgv2-and-1/gpgv", "gpgv2-and-1/gpgv"},
+		{"gpgv2-and-1/gpgv1", "gpgv2-and-1/gpgv1"},
+		{"gpgv2-and-1/gpgv1", "gpgv1/gpgv"},
+		{"gpgv2-and-1/gpgv", "gpgv2-only/gpgv"},
+	} {
+		contents, err := os.ReadFile(filepath.Join(fixtureBins, fixture.source))
+		c.Assert(err, IsNil)
+
+		destination := filepath.Join(s.bins, fixture.destination)
+		c.Assert(os.MkdirAll(filepath.Dir(destination), 0o755), IsNil)
+		c.Assert(os.WriteFile(destination, contents, 0o755), IsNil)
+	}
 }
 
 // If gpg == gpg1 = pick gpg
@@ -52,7 +74,7 @@ func (s *GnupgSuite) TestGPGNothing(c *C) {
 // If gpgv == gpgv1 = pick gpgv
 func (s *GnupgSuite) TestGPGV1(c *C) {
 	origPath := os.Getenv("PATH")
-	_ = os.Setenv("PATH", filepath.Join(s.bins, "gpgv1")+":"+filepath.Join(s.bins, "gpg1"))
+	_ = os.Setenv("PATH", filepath.Join(s.bins, "gpgv1")+string(os.PathListSeparator)+filepath.Join(s.bins, "gpg1"))
 	defer func() { _ = os.Setenv("PATH", origPath) }()
 
 	verifier := NewGpgVerifier(GPG1Finder())
@@ -62,7 +84,7 @@ func (s *GnupgSuite) TestGPGV1(c *C) {
 // gpgv(2) + gpgv1 installed = pick gpgv1
 func (s *GnupgSuite) TestGPGV1Not2(c *C) {
 	origPath := os.Getenv("PATH")
-	_ = os.Setenv("PATH", filepath.Join(s.bins, "gpgv2-and-1")+":"+filepath.Join(s.bins, "gpg1"))
+	_ = os.Setenv("PATH", filepath.Join(s.bins, "gpgv2-and-1")+string(os.PathListSeparator)+filepath.Join(s.bins, "gpg1"))
 	defer func() { _ = os.Setenv("PATH", origPath) }()
 
 	verifier := NewGpgVerifier(GPG1Finder())
@@ -72,7 +94,7 @@ func (s *GnupgSuite) TestGPGV1Not2(c *C) {
 // If gpgv == gpgv2 and no gpgv1 is available = error
 func (s *GnupgSuite) TestGPGVNothing(c *C) {
 	origPath := os.Getenv("PATH")
-	_ = os.Setenv("PATH", filepath.Join(s.bins, "gpgv2-only")+":"+filepath.Join(s.bins, "gpg1"))
+	_ = os.Setenv("PATH", filepath.Join(s.bins, "gpgv2-only")+string(os.PathListSeparator)+filepath.Join(s.bins, "gpg1"))
 	defer func() { _ = os.Setenv("PATH", origPath) }()
 
 	c.Assert(func() { NewGpgVerifier(GPG1Finder()) }, PanicMatches, `Couldn't find a suitable gpg executable.+`)

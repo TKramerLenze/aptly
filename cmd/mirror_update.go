@@ -179,12 +179,7 @@ func aptlyMirrorUpdate(cmd *commander.Command, args []string) error {
 					if pp, ok := context.PackagePool().(aptly.LocalPackagePool); ok {
 						task.TempDownPath, e = pp.GenerateTempPath(task.File.Filename)
 					} else {
-						var file *os.File
-						file, e = os.CreateTemp("", task.File.Filename)
-						if e == nil {
-							task.TempDownPath = file.Name()
-							_ = file.Close()
-						}
+						task.TempDownPath, e = utils.CreateTempPath(task.File.Filename)
 					}
 					if e != nil {
 						pushError(e)
